@@ -1,0 +1,29 @@
+; a simple statically-typed scheme-like language. Used to evaluate the expressiveness and
+; adequacy of the metalanguage.
+
+; define types first
+
+types {
+      ; numeric types
+      Number
+      Integer derives Number
+      Double derives Number
+
+      ; character types
+      Char
+      String
+
+      ; the basic types defined above are covariant, i.e. all Integers are Numbers but not vice-versa
+
+      ; parametrized types. Parametrized types accept one or more other types and are invariant
+      List a ; a can be any other type
+      Pair a b ; a and b can be of any type
+
+      ; the language will also allow chained types, which are especially useful for methods.
+      ; For example, given the types above Number -> String is also a valid type, as is
+      ; Number -> String -> List Number
+}
+
+rules {
+      
+}
