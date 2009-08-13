@@ -2,7 +2,18 @@
   Types.hs - type operations for the language-description metalanguage
 --}
 
-import Data.List
+module Types 
+    (
+      Type(..)
+    , supertypes
+    , subtypes
+    , coalesce
+    , instanceOf
+    ) where
+
+
+import Data.List (intersperse, intersect)
+import AbstractTypeMatching (Matcher, (==>))
 
 data Type = SimpleType  { name :: String }
           | DerivedType { name :: String, supertype :: Type}
@@ -12,7 +23,7 @@ data Type = SimpleType  { name :: String }
 
 instance Show Type where
     show = match $ simpleType (\t -> name t)                                    ==>
-           derivedType (\t -> name t ++ " of " ++ name (supertype t))           ==>
+           derivedType (\t -> name t ++ " deriving " ++ name (supertype t))     ==>
            chainType   (\t -> concat (intersperse " -> " (map show (chain t)))) ==>
            anyType     (\t -> "Any")
 
@@ -32,18 +43,6 @@ anyType :: (Type -> a) -> Type -> Maybe a
 anyType f t@AnyType = Just $ f t
 anyType _ _         = Nothing
 
-
-type Matcher a b = a -> Maybe b
-
--- Matcher combinator. Given two matchers, creates a new matcher which calls
--- the first one and then the second one only if the result of the first is Nothing
-(==>) :: Matcher a b -> Matcher a b -> Matcher a b
-firstMatcher ==> secondMatcher = chainedMatcher where
-    chainedMatcher arg =
-        case fstResult of
-          Nothing -> secondMatcher arg
-          x@(Just _) -> fstResult
-        where fstResult = firstMatcher arg
 
 -- Calls a matcher on an argument, returning the unwrapped Just value if
 -- such is returned. If the matcher returns Nothing, the call triggers
@@ -70,8 +69,8 @@ subtypes ts t = filter (\x -> t `elem` supertypes x) ts
 
 
 -- given 2 types, returns the closest common supertype, if any
-coerce :: Type -> Type -> Type
-coerce ta tb = head $ intersect (supertypes ta) (supertypes tb)
+coalesce :: Type -> Type -> Type
+coalesce ta tb = head $ intersect (supertypes ta) (supertypes tb)
       
 
 -- checks whether one type is an instance of another. Type A is an instance of type B
