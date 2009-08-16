@@ -8,6 +8,19 @@ import Data.Map (Map, fromList, (!), member)
 import Types
 import AbstractTypeMatching
 
+
+data Possibly a = Good a
+                | Error String
+                  deriving (Show)
+
+instance Monad Possibly where
+    (Good val)  >>= f   = f val
+    (Error val) >>= f   = Error val
+    return val          = Good val
+
+quote :: String -> String
+quote str = "'" ++ str ++ "'"
+
 -- represents a term of the form name@id::type, e.g. fst_expr@expr::AnyType
 data Term = NonterminalTerm { termName :: String, termId :: String, termRequiredType :: Type } 
           | TerminalTerm    { termName :: String }
@@ -27,21 +40,22 @@ instance Show Term where
     show (TerminalTerm name) = "\"" ++ name ++ "\""
 
 -- represents one possible expansion of a nonterminal
-data Expansion = Expansion { expansionTerms :: [Term], expressionType :: TypeExpression }
+data Expansion = Expansion { expansionTerms :: [Term], expansionTypeExpr :: TypeExpression }
 
 instance Show Expansion where
     show (Expansion terms typeExpr) = "{ " ++ (concat . intersperse " " . map show) terms ++ " }::"
                                       ++ show typeExpr
 
 -- gets all expansions compatible with the given type
-compatibleExpansions :: [Type] -> Type -> [Expansion] -> Maybe [Expansion]
-compatibleExpansions types t = filterM (isExpansionCompatible types t)
+compatibleExpansions :: [Type] -> Type -> [Expansion] -> Possibly [Expansion]
+compatibleExpansions types t exs = filterM (isExpansionCompatible types t) exs
 
 
 -- checks whether an expansion is compatible with the given type
-isExpansionCompatible :: [Type] -> Type -> Expansion -> Maybe Bool
-isExpansionCompatible types t expansion = evalTypeExpression types (expansionTypeMap expansion) (expressionType expansion) >>=
-                                          (\expansionType -> Just $ expansionType `instanceOf` t)
+isExpansionCompatible :: [Type] -> Type -> Expansion -> Possibly Bool
+isExpansionCompatible types t expansion =
+    evalTypeExpression types (expansionTypeMap expansion) (expansionTypeExpr expansion) >>=
+    (\expansionType -> Good $ expansionType `instanceOf` t)
 
 -- creates a map from names to types in an expansion
 expansionTypeMap :: Expansion -> Map String Type
@@ -59,28 +73,32 @@ data TypeExpression = TypeIdentity String                        -- e.g. ::Numbe
                       deriving (Show)
 
 -- evaluates a type expression for the given type map. A type map associates names with types.
-evalTypeExpression :: [Type] -> Map String Type -> TypeExpression -> Maybe Type
+evalTypeExpression :: [Type] -> Map String Type -> TypeExpression -> Possibly Type
 evalTypeExpression types nameMap expr =
     case expr of
-      (TypeIdentity cs) -> find (\t -> name t == cs) types
+      (TypeIdentity cs) -> maybe (Error (show expr ++ ": unknown type " ++ "\"" ++ cs ++ "\""))
+                                 Good
+                                 (find (\t -> name t == cs) types)
 
-      (TypeOf name)     -> if member name nameMap
-                           then Just $ nameMap ! name
-                           else Nothing
+      expr@(TypeOf name)     -> if member name nameMap
+                                then Good $ nameMap ! name
+                                else Error (show expr ++ ": symbol \"" ++ name ++ "\"" ++ " not found")
                                             
-      (TypeCoalesce exprA exprB) -> evalTypeExpression types nameMap exprA        >>=
+      (TypeCoalesce exprA exprB) -> evalTypeExpression types nameMap exprA           >>=
                               (\typeA -> evalTypeExpression types nameMap exprB >>=
-                                         (\typeB -> Just (typeA, typeB)))           >>=
-                              (\(typeA, typeB) -> Just $ coalesce typeA typeB)
+                                         (\typeB -> Good (typeA, typeB)))           >>=
+                              (\(typeA, typeB) -> Good $ coalesce typeA typeB)
 
 
 -- represents a grammar rule, e.g. expr -> expr + expr
 data Rule = Rule { ruleName :: String, ruleExpansions :: [Expansion] }
 
 -- returns rules with the same name as the given term's id, provided that term is a nonterminal
-findRule :: [Rule] -> Term -> Maybe Rule
-findRule rules (TerminalTerm _) = Nothing
-findRule rules (NonterminalTerm _ id _) = find ((id ==) . ruleName) rules
+findRule :: [Rule] -> Term -> Possibly Rule
+findRule rules t@(TerminalTerm _) = Error $ "Attempted to find a rule for terminal " ++ show t
+findRule rules (NonterminalTerm _ id _) = maybe (Error $ "Could not find rule named " ++ quote id)
+                                                Good
+                                                $ find ((id ==) . ruleName) rules
 
 
 {--
@@ -116,6 +134,8 @@ rule2 = Rule "atom" [Expansion [TerminalTerm "1"] (TypeIdentity "Integer"),
                      Expansion [TerminalTerm "2"] (TypeIdentity "Complex"),
                      Expansion [TerminalTerm "hello, world"] (TypeIdentity "String")]
 
+genState = GeneratorState allTypes [rule1, rule2]
+
 
 -- represents syntax trees generated from the meta grammar
 data SyntaxTree = Branch { branchTerm :: Term,            -- the term that the branch was expanded from
@@ -139,39 +159,49 @@ printSyntaxTree :: Int -> SyntaxTree -> String
 printSyntaxTree ident tree = case tree of
                                (Leaf value) -> "\"" ++ value ++ "\""
                                (Branch term ex t children) ->
-                                   show term ++  " => " ++ show (expressionType ex) ++ " = " ++ show t ++ "\n"
+                                   show term ++  " => " ++ show (expansionTypeExpr ex) ++ " = " ++ show t ++ "\n"
                                    ++ identString ++ "\t- "
                                           ++ (concat . intersperse "\n\t- ")
                                                  (map (printSyntaxTree (ident + 1)) children)
                               where identString = replicate ident '\t'
 
 
+-- holds state necessary for syntax tree generation
+data GeneratorState = GeneratorState
+    {
+      stateTypes :: [Type]
+    , stateRules :: [Rule]
+    }
+
 
 -- given expansions and a term, expands the term into a syntax tree until
 -- there are no branches left to expand
-expandTerm :: [Type] -> [Rule] -> Term -> Maybe SyntaxTree
-expandTerm _ rules (TerminalTerm name) = Just $ Leaf name
-expandTerm types rules t@(NonterminalTerm name id requiredType) =
-    findRule rules t >>=
-    (\rule -> Just $ ruleExpansions rule) >>=
+expandTerm :: GeneratorState -> Term -> Possibly SyntaxTree
+expandTerm state (TerminalTerm name) = Good $ Leaf name
+expandTerm state t@(NonterminalTerm name id requiredType) =
+    findRule (stateRules state) t >>=
+    (\rule -> Good $ ruleExpansions rule) >>=
     (\expansions ->
-         let chosenExpansion = compatibleExpansions types requiredType expansions >>=
-                          (\exs -> if null exs then Nothing else Just $ head exs)
+         let chosenExpansion = compatibleExpansions (stateTypes state) requiredType expansions >>=
+                          (\exs -> if null exs
+                                   then (Error $ "No compatible expansions found for type: " ++ show requiredType)
+                                   else Good $ head exs
+                          )
          in
          chosenExpansion >>=
-         (mapM (expandTerm types rules)) . expansionTerms >>=
+         (mapM (expandTerm state)) . expansionTerms >>=
          (\children -> chosenExpansion >>=
-                       (\ex -> let maybeInferredType = inferType types children (expressionType ex) in
+                       (\ex -> let maybeInferredType = inferType (stateTypes state) children (expansionTypeExpr ex) in
                                case maybeInferredType of
-                                 Nothing -> Nothing
-                                 (Just inferredType) ->
-                                     Just $ Branch t ex inferredType children))
+                                 (Error msg) -> Error msg
+                                 (Good inferredType) ->
+                                     Good $ Branch t ex inferredType children))
     )
 
 
 -- builds a syntax tree from a start symbol
-buildTree :: [Type] -> [Rule] -> String -> Maybe SyntaxTree
-buildTree types rules start = expandTerm types rules (NonterminalTerm "" start AnyType)
+buildTree :: GeneratorState -> String -> Possibly SyntaxTree
+buildTree state start = expandTerm state (NonterminalTerm "" start AnyType)
 
 
 -- builds a map associating names with types for a list of subtrees
@@ -182,5 +212,5 @@ syntaxTreeTypeMap subtrees = fromList $ zip (map (termName . branchTerm) childre
                            childrenBranches = filter isBranch subtrees
 
 -- evaluates a type expression in the context of subtrees
-inferType :: [Type] -> [SyntaxTree] -> TypeExpression -> Maybe Type
+inferType :: [Type] -> [SyntaxTree] -> TypeExpression -> Possibly Type
 inferType types subtrees = evalTypeExpression types $ syntaxTreeTypeMap subtrees
