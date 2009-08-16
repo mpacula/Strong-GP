@@ -134,7 +134,7 @@ rule2 = Rule "atom" [Expansion [TerminalTerm "1"] (TypeIdentity "Integer"),
                      Expansion [TerminalTerm "2"] (TypeIdentity "Complex"),
                      Expansion [TerminalTerm "hello, world"] (TypeIdentity "String")]
 
-genState = GeneratorState allTypes [rule1, rule2]
+genState = GeneratorState allTypes [rule1, rule2] [1..100]
 
 
 -- represents syntax trees generated from the meta grammar
@@ -169,48 +169,63 @@ printSyntaxTree ident tree = case tree of
 -- holds state necessary for syntax tree generation
 data GeneratorState = GeneratorState
     {
-      stateTypes :: [Type]
-    , stateRules :: [Rule]
+      stateTypes      :: [Type]           -- all types available to the generator
+    , stateRules      :: [Rule]           -- all rules available to the generator
+    , stateChoices    :: [Int]            -- an infinite list denoting which expansion to choose at each step
     }
+
+-- removed the head choice from a GeneratorState
+advance :: GeneratorState -> GeneratorState
+advance state = state { stateChoices = tail $ stateChoices state }
+
+-- chooses an expansion compatible with the given term, if any
+chooseExpansion :: GeneratorState -> Term -> Possibly (GeneratorState, Expansion)
+chooseExpansion state t@(NonterminalTerm _ _ requiredType) =
+    findRule (stateRules state) t                                                         >>=
+    (\rule -> compatibleExpansions (stateTypes state) requiredType (ruleExpansions rule)) >>=
+    (\exs -> if null exs
+             then (Error $ "No compatible expansions found for type: " ++ show requiredType)
+             else Good $ exs !! ((`mod` length exs) . head . stateChoices) state) >>=
+    (\chosenExpansion -> Good (state, chosenExpansion))
+
+chooseExpansion _ t = Error $ "Terminals cannot be expanded. Terminal: " ++ termName t
+
+
+-- expands multiple terms, making sure each expansion operates with an updated state
+expandTerms :: GeneratorState -> [Term] -> Possibly (GeneratorState, [SyntaxTree])
+expandTerms initialState [] = Good $ (initialState, [])
+expandTerms initialState (t:ts) = expandTerm initialState t >>=
+                                  (\(nextState, tree) ->
+                                       expandTerms nextState ts >>=
+                                       (\(finalState, trees) -> Good $ (finalState, tree : trees)))
 
 
 -- given expansions and a term, expands the term into a syntax tree until
 -- there are no branches left to expand
-expandTerm :: GeneratorState -> Term -> Possibly SyntaxTree
-expandTerm state (TerminalTerm name) = Good $ Leaf name
-expandTerm state t@(NonterminalTerm name id requiredType) =
-    findRule (stateRules state) t >>=
-    (\rule -> Good $ ruleExpansions rule) >>=
-    (\expansions ->
-         let chosenExpansion = compatibleExpansions (stateTypes state) requiredType expansions >>=
-                          (\exs -> if null exs
-                                   then (Error $ "No compatible expansions found for type: " ++ show requiredType)
-                                   else Good $ head exs
-                          )
-         in
-         chosenExpansion >>=
-         (mapM (expandTerm state)) . expansionTerms >>=
-         (\children -> chosenExpansion >>=
-                       (\ex -> let maybeInferredType = inferType (stateTypes state) children (expansionTypeExpr ex) in
-                               case maybeInferredType of
-                                 (Error msg) -> Error msg
-                                 (Good inferredType) ->
-                                     Good $ Branch t ex inferredType children))
-    )
+expandTerm :: GeneratorState -> Term -> Possibly (GeneratorState, SyntaxTree)
+expandTerm initialState (TerminalTerm name) = Good (initialState, Leaf name)
+expandTerm initialState term = chooseExpansion initialState term >>=
+                               (\(nextState, expansion) ->
+                                    (expandTerms nextState . expansionTerms) expansion >>=
+                               (\(nextState, children) ->
+                                    inferType (stateTypes nextState) children (expansionTypeExpr expansion) >>=
+                               (\inferredType ->
+                                    Good (advance nextState, Branch term expansion inferredType children))))
 
 
--- builds a syntax tree from a start symbol
+-- -- builds a syntax tree from a start symbol
 buildTree :: GeneratorState -> String -> Possibly SyntaxTree
-buildTree state start = expandTerm state (NonterminalTerm "" start AnyType)
+buildTree state start = expandTerm state (NonterminalTerm "" start AnyType) >>=
+                        (\(state, tree) -> Good tree)
 
 
--- builds a map associating names with types for a list of subtrees
+-- -- builds a map associating names with types for a list of subtrees
 syntaxTreeTypeMap :: [SyntaxTree] -> Map String Type
 syntaxTreeTypeMap subtrees = fromList $ zip (map (termName . branchTerm) childrenBranches)
-                                        (map branchType childrenBranches)
-                         where
-                           childrenBranches = filter isBranch subtrees
+                             (map branchType childrenBranches)
+                                 where
+                                   childrenBranches = filter isBranch subtrees
 
--- evaluates a type expression in the context of subtrees
+-- -- evaluates a type expression in the context of subtrees
 inferType :: [Type] -> [SyntaxTree] -> TypeExpression -> Possibly Type
 inferType types subtrees = evalTypeExpression types $ syntaxTreeTypeMap subtrees
