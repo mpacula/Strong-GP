@@ -2,6 +2,8 @@
   Defines datatypes for expressing metalanguage rules
 --}
 
+import Debug.Trace (trace)
+import System.Random (mkStdGen, randoms)
 import Control.Monad (mapM, filterM)
 import Data.List (intersperse, find)
 import Data.Map (Map, fromList, (!), member)
@@ -103,9 +105,10 @@ findRule rules (NonterminalTerm _ id _) = maybe (Error $ "Could not find rule na
 
 {--
   Test grammar:
-  Rule 1: expr -> {a@atom::Number "+" b@atom::Number}::coalesce a b
+  Rule 1: expr -> {a@expr::Number "+" b@atom::Number}::coalesce a b
+                  { c@atom::? }::typeOf c
   Rule 2: atom -> { "1" } :: Integer
-                  { "2" } :: Complex
+                  { "2" } :: Integer
                   { "hello, world" } :: String
 --}
 
@@ -122,19 +125,21 @@ allTypes = [tString, tNumber, tReal, tRational, tNatural, tInteger, tIrrational,
 
 expansion1 = Expansion
                      [
-                      (NonterminalTerm "a" "atom" tNumber),
-                      (TerminalTerm "+"),
-                      (NonterminalTerm "b" "atom" tComplex)
+                      (NonterminalTerm "a" "expr" tString),
+                      (TerminalTerm "++"),
+                      (NonterminalTerm "b" "expr" tNumber)
                      ]
              (TypeCoalesce (TypeOf "a") (TypeOf "b"))
 
-rule1 = Rule "expr" [expansion1]
+expansion2 = Expansion [(NonterminalTerm "c" "atom" AnyType)] (TypeOf "c")
+
+rule1 = Rule "expr" [expansion1, expansion2]
 
 rule2 = Rule "atom" [Expansion [TerminalTerm "1"] (TypeIdentity "Integer"),
-                     Expansion [TerminalTerm "2"] (TypeIdentity "Complex"),
+                     Expansion [TerminalTerm "2"] (TypeIdentity "Integer"),
                      Expansion [TerminalTerm "hello, world"] (TypeIdentity "String")]
 
-genState = GeneratorState allTypes [rule1, rule2] [1..100]
+genState = GeneratorState allTypes [rule1, rule2] [1..100] 0
 
 
 -- represents syntax trees generated from the meta grammar
@@ -143,6 +148,9 @@ data SyntaxTree = Branch { branchTerm :: Term,            -- the term that the b
                            branchType :: Type,            -- type of the subtree rooted at the branch
                            children :: [SyntaxTree] }     -- subtrees
                 | Leaf   { leafValue :: String }
+                | Null                                    -- special subtree type denoting a subtree
+                                                          -- which was not generated due to unstatisfiability
+                                                          -- of type constraints
 
 isLeaf, isBranch :: SyntaxTree -> Bool
 isLeaf (Leaf _) = True
@@ -152,18 +160,29 @@ isBranch = not . isLeaf
 
 
 instance Show SyntaxTree where
-    show = printSyntaxTree 0
+    show = ("\n" ++) . printSyntaxTree 1
 
 
 printSyntaxTree :: Int -> SyntaxTree -> String
-printSyntaxTree ident tree = case tree of
-                               (Leaf value) -> "\"" ++ value ++ "\""
+printSyntaxTree ident tree = let header = printSyntaxTreeHeader tree in
+                             case tree of                                
+                               (Leaf value)                -> "- " ++ header
                                (Branch term ex t children) ->
-                                   show term ++  " => " ++ show (expansionTypeExpr ex) ++ " = " ++ show t ++ "\n"
-                                   ++ identString ++ "\t- "
-                                          ++ (concat . intersperse "\n\t- ")
-                                                 (map (printSyntaxTree (ident + 1)) children)
-                              where identString = replicate ident '\t'
+                                   "- " ++ header ++ "\n" ++
+                                   (concat . map (identString ++)) subtrees
+                                 where
+                                   identString = replicate ident '\t'
+                                   subtrees = (intersperse "\n" . map (printSyntaxTree (ident + 1))) children
+                                
+
+-- prints the header of a syntax tree, without any leading or trailing whitespace characters
+printSyntaxTreeHeader :: SyntaxTree -> String
+printSyntaxTreeHeader tree = case tree of
+                               (Leaf value)         -> "\"" ++ value ++ "\""
+                               (Branch term ex t _) -> "{" ++ show term ++ "}::"     ++
+                                                       (show . expansionTypeExpr) ex ++
+                                                       " = " ++ show t
+                                                       
 
 
 -- holds state necessary for syntax tree generation
@@ -172,20 +191,22 @@ data GeneratorState = GeneratorState
       stateTypes      :: [Type]           -- all types available to the generator
     , stateRules      :: [Rule]           -- all rules available to the generator
     , stateChoices    :: [Int]            -- an infinite list denoting which expansion to choose at each step
+    , stateCount      :: Int              -- number of times state has been changed, used for debugging
     }
 
--- removed the head choice from a GeneratorState
+-- removes the head choice from a GeneratorState
 advance :: GeneratorState -> GeneratorState
-advance state = state { stateChoices = tail $ stateChoices state }
+advance state = state { stateChoices = tail $ stateChoices state, stateCount = (+1) $ stateCount state }
 
 -- chooses an expansion compatible with the given term, if any
 chooseExpansion :: GeneratorState -> Term -> Possibly (GeneratorState, Expansion)
 chooseExpansion state t@(NonterminalTerm _ _ requiredType) =
-    findRule (stateRules state) t                                                         >>=
-    (\rule -> compatibleExpansions (stateTypes state) requiredType (ruleExpansions rule)) >>=
+    findRule (stateRules state) t                                                        >>=
+    (\rule -> compatibleExpansions (stateTypes state) requiredType (ruleExpansions rule) >>=
     (\exs -> if null exs
-             then (Error $ "No compatible expansions found for type: " ++ show requiredType)
-             else Good $ exs !! ((`mod` length exs) . head . stateChoices) state) >>=
+             then Error $ "No compatible expansions found for type: " ++ (name requiredType)
+                  ++ ". Considered rule: " ++ quote (ruleName rule)
+             else Good $ exs !! ((`mod` length exs) . head . stateChoices) state)) >>=
     (\chosenExpansion -> Good (state, chosenExpansion))
 
 chooseExpansion _ t = Error $ "Terminals cannot be expanded. Terminal: " ++ termName t
@@ -206,7 +227,8 @@ expandTerm :: GeneratorState -> Term -> Possibly (GeneratorState, SyntaxTree)
 expandTerm initialState (TerminalTerm name) = Good (initialState, Leaf name)
 expandTerm initialState term = chooseExpansion initialState term >>=
                                (\(nextState, expansion) ->
-                                    (expandTerms nextState . expansionTerms) expansion >>=
+                                    --trace ("Expanding " ++ show term ++ " using expansion " ++ show expansion ++ ". nonce: " ++ show (stateCount nextState))
+                                    (expandTerms (advance nextState) . expansionTerms) expansion >>=
                                (\(nextState, children) ->
                                     inferType (stateTypes nextState) children (expansionTypeExpr expansion) >>=
                                (\inferredType ->
@@ -214,9 +236,9 @@ expandTerm initialState term = chooseExpansion initialState term >>=
 
 
 -- -- builds a syntax tree from a start symbol
-buildTree :: GeneratorState -> String -> Possibly SyntaxTree
+buildTree :: GeneratorState -> String -> Possibly (Int, SyntaxTree)
 buildTree state start = expandTerm state (NonterminalTerm "" start AnyType) >>=
-                        (\(state, tree) -> Good tree)
+                        (\(state, tree) -> Good (stateCount state, tree))
 
 
 -- -- builds a map associating names with types for a list of subtrees
@@ -229,3 +251,4 @@ syntaxTreeTypeMap subtrees = fromList $ zip (map (termName . branchTerm) childre
 -- -- evaluates a type expression in the context of subtrees
 inferType :: [Type] -> [SyntaxTree] -> TypeExpression -> Possibly Type
 inferType types subtrees = evalTypeExpression types $ syntaxTreeTypeMap subtrees
+

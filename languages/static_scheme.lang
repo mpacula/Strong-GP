@@ -38,7 +38,7 @@ rules {
       ; Nonterminals can be given names using the @ notation, with the lhs being the name
       ; and rhs being a nonterminal. The names are expansion-local and are only available
       ; in the expansions type expression.
-      ; Nonterminals are enclosed in double quotes.
+      ; Terminals are enclosed in double quotes.
 
       ; What if we were to support other operations such as "-" and "*"? Operator precedence
       ; nonwithstanding, we could write something like:
@@ -54,7 +54,7 @@ rules {
       ; Looks good. Now let's try declaring literals
 
       integer_expr -> { ['0'-'9']+ } :: Integer             ; supported operators: +,*,[]
-      char_expr -> { "'" ['a'-'z'] "'"  } :: Char           ; this doesn't define all possible alphanumeric 
+      char_expr -> { "'" ['a'-'z'] "'" } :: Char           ; this doesn't define all possible alphanumeric 
                                                             ; identifiers, but for now it's good enough
 
       string_expr -> "\"" [a-z]+ "\""
