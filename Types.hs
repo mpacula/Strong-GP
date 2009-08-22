@@ -14,10 +14,10 @@ import AbstractTypeMatching (Matcher, (==>))
 data Type = PrimitiveType  { name :: String }
           | PolymorphicType { name :: String, vars :: [Type]}
           | TypeVariable { name :: String }
-            deriving (Eq)
+            deriving (Eq, Ord)
 
 instance Show Type where
     show (PrimitiveType name)              = name
-    show (PolymorphicType name vars)       = name ++ " " ++ (concat . intersperse " " . map show) vars
+    show (PolymorphicType name vars)       = "(" ++ name ++ " " ++ (concat . intersperse " " . map show) vars ++ ")"
     show (TypeVariable name)               = name
 
