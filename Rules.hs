@@ -40,6 +40,9 @@ instance Show Term where
 -- represents one possible expansion of a nonterminal
 data Expansion = Expansion { expansionTerms :: [Term], expansionType :: Type }
 
+hasNonterminals :: Expansion -> Bool
+hasNonterminals = any isNonterminal . expansionTerms
+
 instance Show Expansion where
     show (Expansion terms expansionType) = "{ " ++ (concat . intersperse " " . map show) terms ++ " }::"
                                            ++ show expansionType
@@ -132,19 +135,34 @@ advance state = state { stateChoices = tail $ stateChoices state, stateCount = (
 showTypeMismatch :: Type -> Type -> String
 showTypeMismatch expected actual = "Type mismatch. Expected: " ++ show expected ++ ". Actual: " ++ show actual
 
-instantiate :: Type -> Type -> GeneratorState -> GeneratorState
-instantiate originalType newType originalState =
+instantiateState :: Type -> Type -> GeneratorState -> GeneratorState
+instantiateState originalType newType originalState =
     case originalType of
       (PrimitiveType _)      -> originalState
-      v@(TypeVariable  _)    -> originalState { stateVariableMap = insert v newType $ stateVariableMap originalState }
-      (PolymorphicType _ _) -> foldr instantiator originalState $ zip (vars originalType) (vars newType)
+      v@(TypeVariable  _)    -> case newType of
+                                  (TypeVariable _) -> originalState
+                                  _                -> originalState {
+                                                        stateVariableMap = insert v newType $ stateVariableMap originalState
+                                                      }
+      (PolymorphicType _ _)  -> foldr instantiator originalState $ zip (vars originalType) (vars newType)
                                where
                                  instantiator = (\(before, after) state ->
                                                      if member before (stateVariableMap state) && before /= after
                                                      then error $ showTypeMismatch ((stateVariableMap state) ! before)
                                                                                    after
-                                                     else instantiate before after state
+                                                     else instantiateState before after state
                                                 )
+
+clearInstances :: GeneratorState -> GeneratorState
+clearInstances state = state { stateVariableMap = fromList [] }
+
+instantiateType :: GeneratorState -> Type -> Type
+instantiateType state t = case t of
+                            t@(PrimitiveType _) -> t
+                            t@(TypeVariable _)  -> if member t (stateVariableMap state)
+                                                   then (stateVariableMap state) ! t
+                                                   else t
+                            (PolymorphicType name vars) -> (PolymorphicType name (map (instantiateType state) vars))
 
 deepen :: GeneratorState -> GeneratorState
 deepen state = state { stateDepth = 1 + stateDepth state }
@@ -169,8 +187,11 @@ compatibleExpansions t = filter $ (`isTypeCompatible` t) . expansionType
 chooseExpansion :: GeneratorState -> Type -> Possibly (Expansion, GeneratorState)
 chooseExpansion state t = if null exs
                           then Error $ "Could not find a compatible expansion for type " ++ show t
-                          else Good (exs !! (head . stateChoices) state, advance state)
-                              where exs = compatibleExpansions t (stateExpansions state)
+                          else Good (exs !! ((`mod` (length exs)) . head . stateChoices) state, advance state)
+                              where allCompatible = compatibleExpansions t (stateExpansions state)
+                                    exs = if (stateDepth state) == (stateMaxDepth state) - 1
+                                          then filter (not . hasNonterminals) allCompatible
+                                          else allCompatible
 
 
 -- expands a list of terms, modifying the state accordingly
@@ -185,8 +206,17 @@ expand :: GeneratorState -> Term -> Possibly (SyntaxTree, GeneratorState)
 expand state (TerminalTerm name) = Good (Leaf name, state)
 expand initState term@(NonterminalTerm name requiredType)
            | stateDepth initState >= stateMaxDepth initState = Error "Maximum depth exceeded"
-           | otherwise = chooseExpansion initState requiredType >>=
-                         (\(expansion, state) -> Error "not yet implemented")
+           | otherwise = chooseExpansion initState (instantiateType initState requiredType) >>=
+                         (\(expansion, state) ->
+                              let exType = (expansionType expansion)
+                                  childrenInitState = instantiateState exType requiredType (deepen (clearInstances state))
+                              in 
+                                expandTerms childrenInitState (expansionTerms expansion) >>=
+                         (\(children, childrenFinalState) ->
+                              let finalExpansionType = instantiateType childrenFinalState (expansionType expansion)
+                              in
+                                Good (Branch term finalExpansionType children,
+                                      instantiateState requiredType finalExpansionType initState)))
 
 typeA = (PolymorphicType "List" [(PolymorphicType "Func"
                                  [(TypeVariable "a"), (PolymorphicType "Func" [TypeVariable "b", TypeVariable "c"])])])
@@ -198,3 +228,28 @@ typeB = (PolymorphicType "List" [(PolymorphicType "Func"
 
 typeC = (PolymorphicType "List" [(PolymorphicType "Func"
                                  [(TypeVariable "a"), (PolymorphicType "Func" [TypeVariable "b", TypeVariable "a"])])])
+
+tNumber = PrimitiveType "Number"
+tString = PrimitiveType "String"
+
+vA = TypeVariable "a"
+vB = TypeVariable "b"
+vC = TypeVariable "c"
+
+tList = PolymorphicType "List" [vA]
+
+expansion1 = (Expansion [(NonterminalTerm "num" tNumber), (TerminalTerm "+"), (NonterminalTerm "num" tNumber)] tNumber)
+expansion2 = (Expansion [(NonterminalTerm "num" tNumber), (TerminalTerm "*"), (NonterminalTerm "num" tNumber)] tNumber)
+
+expansion3 = Expansion [(TerminalTerm "1")] tNumber
+expansion4 = Expansion [(TerminalTerm "2")] tNumber
+
+expansion5 = (Expansion [(NonterminalTerm "" tString), (TerminalTerm "++"), (NonterminalTerm "" tString)] tString)
+expansion6 = (Expansion [(NonterminalTerm "" vA), (TerminalTerm ":"), (NonterminalTerm "" tList)] tList)
+expansion7 = (Expansion [TerminalTerm "[]"] tList)
+
+expansion8 = (Expansion [TerminalTerm "hello"] tString)
+expansion9 = (Expansion [TerminalTerm "world"] tString)
+
+allExpansions = [expansion1, expansion2, expansion3, expansion4, expansion5, expansion6, expansion7, expansion8, expansion9]
+testState = startState allExpansions [0,0..100] 4
