@@ -3,7 +3,7 @@
 --}
 
 import Debug.Trace (trace)
-import System.Random (mkStdGen, randoms)
+import System.Random (mkStdGen, randoms, getStdGen)
 import Control.Monad (mapM, filterM)
 import Data.List (intersperse, find)
 import Data.Map (Map, fromList, (!), member, insert)
@@ -34,7 +34,7 @@ isNonterminal _ = False
 isTerminal = not . isNonterminal
 
 instance Show Term where
-    show (NonterminalTerm name requiredType) = name ++ "::" ++ show requiredType
+    show (NonterminalTerm _ requiredType) = show requiredType
     show (TerminalTerm name)                 = "\"" ++ name ++ "\""
 
 -- represents one possible expansion of a nonterminal
@@ -79,6 +79,10 @@ isBranch = not . isLeaf
 instance Show SyntaxTree where
     show = ("\n" ++) . printSyntaxTree 1
 
+flattenTree :: SyntaxTree -> String
+flattenTree (Leaf value) = value
+flattenTree (Branch _ _ children) = (concat . map flattenTree) children
+
 
 printSyntaxTree :: Int -> SyntaxTree -> String
 printSyntaxTree ident tree = let header = printSyntaxTreeHeader tree in
@@ -96,8 +100,7 @@ printSyntaxTree ident tree = let header = printSyntaxTreeHeader tree in
 printSyntaxTreeHeader :: SyntaxTree -> String
 printSyntaxTreeHeader tree = case tree of
                                (Leaf value)         -> "\"" ++ value ++ "\""
-                               (Branch term t _)      -> termName term ++ "::" ++ show t
-                                                         ++ " (" ++ show (termRequiredType term) ++ ")"
+                               (Branch term t _)      -> show t ++ ", from " ++ show (termRequiredType term)
                                                        
 
 
@@ -111,6 +114,9 @@ data GeneratorState = GeneratorState
     , stateDepth        :: Int              -- current depth in the tree
     , stateMaxDepth     :: Int              -- maximum tree depth
     }
+
+showVariableMap :: GeneratorState -> String
+showVariableMap = show . stateVariableMap
 
 startState :: [Expansion] -> [Int] -> Int -> GeneratorState
 startState expansions choices maxDepth = GeneratorState {
@@ -147,9 +153,9 @@ instantiateState originalType newType originalState =
       (PolymorphicType _ _)  -> foldr instantiator originalState $ zip (vars originalType) (vars newType)
                                where
                                  instantiator = (\(before, after) state ->
-                                                     if member before (stateVariableMap state) && before /= after
-                                                     then error $ showTypeMismatch ((stateVariableMap state) ! before)
-                                                                                   after
+                                                     let varMap = (stateVariableMap state) in
+                                                     if member before varMap && (varMap ! before) /= after
+                                                     then error $ showTypeMismatch (varMap ! before) after
                                                      else instantiateState before after state
                                                 )
 
@@ -182,12 +188,17 @@ _ `isTypeCompatible` _ = False
 compatibleExpansions :: Type -> [Expansion] -> [Expansion]
 compatibleExpansions t = filter $ (`isTypeCompatible` t) . expansionType
 
+choose :: [Int] -> [a] -> a
+choose choices xs = xs !! ((`mod` size) . head) choices
+                    where
+                      size = length xs
+
 
 -- chooses a type-compatible expansion for the given type, if any
 chooseExpansion :: GeneratorState -> Type -> Possibly (Expansion, GeneratorState)
 chooseExpansion state t = if null exs
                           then Error $ "Could not find a compatible expansion for type " ++ show t
-                          else Good (exs !! ((`mod` (length exs)) . head . stateChoices) state, advance state)
+                          else Good $ (instantiateExpansion state t (choose (stateChoices state) exs), advance state)
                               where allCompatible = compatibleExpansions t (stateExpansions state)
                                     exs = if (stateDepth state) == (stateMaxDepth state) - 1
                                           then filter (not . hasNonterminals) allCompatible
@@ -198,8 +209,25 @@ chooseExpansion state t = if null exs
 expandTerms :: GeneratorState -> [Term] -> Possibly ([SyntaxTree], GeneratorState)
 expandTerms state [] = Good ([], state)
 expandTerms state (t:ts) = expand state t >>=
-                           (\(tree, nextState) -> expandTerms state ts >>=
+                           (\(tree, nextState) -> expandTerms nextState ts >>=
                             (\(trees, finalState) -> Good $ (tree:trees, finalState)))
+
+copyChoices :: GeneratorState -> GeneratorState -> GeneratorState
+copyChoices src dest = dest { stateChoices = stateChoices src, stateCount = stateCount src  }
+
+childrenState :: GeneratorState -> GeneratorState
+childrenState = deepen . clearInstances
+
+instantiateExpansion :: GeneratorState -> Type -> Expansion -> Expansion
+instantiateExpansion state requiredType ex = Expansion terms $ (instantiateType newState . expansionType) ex
+                                             where
+                                               newState = instantiateState (expansionType ex) requiredType state
+                                               terms = map termMapper (expansionTerms ex)
+                                                       
+                                               termMapper t@(TerminalTerm _) = t
+                                               termMapper (NonterminalTerm name originalType) =
+                                                   (NonterminalTerm name (instantiateType newState originalType))
+
 
 -- expands a single term
 expand :: GeneratorState -> Term -> Possibly (SyntaxTree, GeneratorState)
@@ -208,15 +236,19 @@ expand initState term@(NonterminalTerm name requiredType)
            | stateDepth initState >= stateMaxDepth initState = Error "Maximum depth exceeded"
            | otherwise = chooseExpansion initState (instantiateType initState requiredType) >>=
                          (\(expansion, state) ->
-                              let exType = (expansionType expansion)
-                                  childrenInitState = instantiateState exType requiredType (deepen (clearInstances state))
-                              in 
-                                expandTerms childrenInitState (expansionTerms expansion) >>=
+                              trace ("Chose expansion " ++ show expansion ++ ". Req'd type: " ++ show requiredType)
+                              trace ("Count: " ++ (show . stateCount) state)
+                              expandTerms (childrenState state) (expansionTerms expansion) >>=
                          (\(children, childrenFinalState) ->
                               let finalExpansionType = instantiateType childrenFinalState (expansionType expansion)
                               in
                                 Good (Branch term finalExpansionType children,
-                                      instantiateState requiredType finalExpansionType initState)))
+                                      instantiateState requiredType finalExpansionType
+                                                           (copyChoices childrenFinalState initState))))
+
+{--
+  DEBUG DEFINITIONS
+--}
 
 typeA = (PolymorphicType "List" [(PolymorphicType "Func"
                                  [(TypeVariable "a"), (PolymorphicType "Func" [TypeVariable "b", TypeVariable "c"])])])
@@ -252,4 +284,28 @@ expansion8 = (Expansion [TerminalTerm "hello"] tString)
 expansion9 = (Expansion [TerminalTerm "world"] tString)
 
 allExpansions = [expansion1, expansion2, expansion3, expansion4, expansion5, expansion6, expansion7, expansion8, expansion9]
-testState = startState allExpansions [0,0..100] 4
+testState = startState allExpansions (randoms (mkStdGen 12) :: [Int]) 10
+
+mkFunc :: Type -> Type -> Type
+mkFunc arg ret = PolymorphicType "Func" [arg, ret]
+
+lparen = TerminalTerm "("
+rparen = TerminalTerm ")"
+
+sexp1 = Expansion [lparen, (NonterminalTerm "func" (mkFunc vA vB)), (NonterminalTerm "" vA), rparen] vB
+sexp2 = Expansion [lparen, (TerminalTerm "lambda"), lparen, (TerminalTerm "x"), rparen,
+                             (NonterminalTerm "expr" vA), rparen] (mkFunc vB vA)
+sexp3 = Expansion [lparen, TerminalTerm "+", (NonterminalTerm "" tNumber), (NonterminalTerm "" tNumber), rparen] tNumber
+sexp4 = Expansion [lparen, TerminalTerm "-", (NonterminalTerm "" tNumber), (NonterminalTerm "" tNumber), rparen] tNumber
+sexp5 = Expansion [lparen, TerminalTerm "*", (NonterminalTerm "" tNumber), (NonterminalTerm "" tNumber), rparen] tNumber
+sexp6 = Expansion [lparen, TerminalTerm "/", (NonterminalTerm "" tNumber), (NonterminalTerm "" tNumber), rparen] tNumber
+
+sexp7 = Expansion [lparen, TerminalTerm "cons", NonterminalTerm "" vA, NonterminalTerm "" tList] tList
+
+sexp8 = Expansion [(TerminalTerm "1")] tNumber
+sexp9 = Expansion [(TerminalTerm "2")] tNumber
+sexp10 = Expansion [(TerminalTerm "3")] tNumber
+sexp11 = Expansion [(TerminalTerm "4")] tNumber
+
+sexps = [sexp1, sexp2, sexp3, sexp4, sexp5, sexp6, sexp7, sexp8, sexp9, sexp10, sexp11]
+sexpState = startState sexps (randoms (mkStdGen 12) :: [Int]) 5
