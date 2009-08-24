@@ -4,60 +4,65 @@
 
 import Debug.Trace (trace)
 import System.Random (mkStdGen, randoms, getStdGen)
-import Control.Monad (mapM, filterM)
 import Data.List (intersperse, find)
 import Data.Map (Map, fromList, (!), member, insert)
-import Types
-import AbstractTypeMatching
+import Types (Type (..))
+import Possibly (Possibly (Good, Error))
+import Utils (choose)
 
 
-data Possibly a = Good a
-                | Error String
-                  deriving (Show)
 
-instance Monad Possibly where
-    (Good val)  >>= f   = f val
-    (Error val) >>= f   = Error val
-    return val          = Good val
+{--
+  TERMINALS & NONTERMINALS
+--}
 
-quote :: String -> String
-quote str = "'" ++ str ++ "'"
 
--- represents a term of the name::type
-data Term = NonterminalTerm { termName :: String, termRequiredType :: Type } 
+
+data Term = NonterminalTerm { termRequiredType :: Type } 
           | TerminalTerm    { termName :: String }
 
-isNonterminal :: Term -> Bool
-isNonterminal (NonterminalTerm _ _) = True
-isNonterminal _ = False
+
+instance Show Term where
+    show (NonterminalTerm requiredType) = show requiredType
+    show (TerminalTerm name)            = "\"" ++ name ++ "\""
+
+
+isNonterminal,isTerminal :: Term -> Bool
+isNonterminal (NonterminalTerm _) = True
+isNonterminal _                   = False
 
 isTerminal = not . isNonterminal
 
-instance Show Term where
-    show (NonterminalTerm _ requiredType) = show requiredType
-    show (TerminalTerm name)                 = "\"" ++ name ++ "\""
+
+
+{--
+  EXPANSIONS
+--}
+
+
 
 -- represents one possible expansion of a nonterminal
-data Expansion = Expansion { expansionTerms :: [Term], expansionType :: Type }
+data Expansion = Expansion
+    {
+      expansionTerms :: [Term]
+    , expansionType :: Type
+    }
+
 
 hasNonterminals :: Expansion -> Bool
 hasNonterminals = any isNonterminal . expansionTerms
+
 
 instance Show Expansion where
     show (Expansion terms expansionType) = "{ " ++ (concat . intersperse " " . map show) terms ++ " }::"
                                            ++ show expansionType
 
 
--- represents a grammar rule, e.g. expr -> expr + expr
-data Rule = Rule { ruleName :: String, ruleExpansions :: [Expansion] }
 
+{--
+  SYNTAX TREES
+--}
 
--- returns rules with the same name as the given term's id, provided that term is a nonterminal
-findRule :: [Rule] -> Term -> Possibly Rule
-findRule rules t@(TerminalTerm _) = Error $ "Attempted to find a rule for terminal " ++ show t
-findRule rules (NonterminalTerm name _) = maybe (Error $ "Could not find rule named " ++ quote name)
-                                          Good
-                                          $ find ((name ==) . ruleName) rules
 
 
 -- represents syntax trees generated from the meta grammar
@@ -65,25 +70,19 @@ data SyntaxTree = Branch { branchTerm :: Term,                  -- the term that
                            branchType :: Type,                  -- type of the branch
                            branchChildren :: [SyntaxTree] }     -- subtrees
                 | Leaf   { leafValue :: String }
-                | Null                                          -- special subtree type denoting a subtree
-                                                                -- which was not generated due to unstatisfiability
-                                                                -- of type constraints
-
-isLeaf, isBranch :: SyntaxTree -> Bool
-isLeaf (Leaf _) = True
-isLeaf _  = False
-
-isBranch = not . isLeaf
 
 
 instance Show SyntaxTree where
     show = ("\n" ++) . printSyntaxTree 1
 
+
+-- shows terminals from all leaves separated by spaces
 flattenTree :: SyntaxTree -> String
 flattenTree (Leaf value) = value
-flattenTree (Branch _ _ children) = (concat . map flattenTree) children
+flattenTree (Branch _ _ children) = (concat . intersperse " " . map flattenTree) children
 
 
+-- pretty prints a syntax tree
 printSyntaxTree :: Int -> SyntaxTree -> String
 printSyntaxTree ident tree = let header = printSyntaxTreeHeader tree in
                              case tree of                                
@@ -101,7 +100,18 @@ printSyntaxTreeHeader :: SyntaxTree -> String
 printSyntaxTreeHeader tree = case tree of
                                (Leaf value)         -> "\"" ++ value ++ "\""
                                (Branch term t _)      -> show t ++ ", from " ++ show (termRequiredType term)
-                                                       
+
+
+
+{--
+  SYNTAX TREE GENERATION
+--}
+
+
+
+-- creates an error string indicating type mismatch
+showTypeMismatch :: Type -> Type -> String
+showTypeMismatch expected actual = "Type mismatch. Expected: " ++ show expected ++ ". Actual: " ++ show actual
 
 
 -- holds state necessary for syntax tree generation
@@ -115,9 +125,15 @@ data GeneratorState = GeneratorState
     , stateMaxDepth     :: Int              -- maximum tree depth
     }
 
-showVariableMap :: GeneratorState -> String
-showVariableMap = show . stateVariableMap
 
+
+{--
+  STATE TRANSFORMATIONS
+--}
+
+
+
+-- creates an initial state that can be used to generate syntax trees
 startState :: [Expansion] -> [Int] -> Int -> GeneratorState
 startState expansions choices maxDepth = GeneratorState {
                                            stateExpansions = expansions
@@ -128,19 +144,34 @@ startState expansions choices maxDepth = GeneratorState {
                                          , stateMaxDepth = maxDepth
                                          }
 
--- gets all expansions for the given list of rules
-expansions :: [Rule] -> [Expansion]
-expansions = concat . map ruleExpansions
-
-
 -- removes the head choice from a GeneratorState
-advance :: GeneratorState -> GeneratorState
-advance state = state { stateChoices = tail $ stateChoices state, stateCount = (+1) $ stateCount state }
+advanceChoices :: GeneratorState -> GeneratorState
+advanceChoices state = state { stateChoices = tail $ stateChoices state, stateCount = (+1) $ stateCount state }
 
--- creates an error string indicating type mismatch
-showTypeMismatch :: Type -> Type -> String
-showTypeMismatch expected actual = "Type mismatch. Expected: " ++ show expected ++ ". Actual: " ++ show actual
 
+-- clears type variable map in a generator state
+clearInstances :: GeneratorState -> GeneratorState
+clearInstances state = state { stateVariableMap = fromList [] }
+
+
+-- increased the depth in a geneartor state
+deepen :: GeneratorState -> GeneratorState
+deepen state = state { stateDepth = 1 + stateDepth state }
+
+
+-- copies choices from one state to another
+copyChoices :: GeneratorState -> GeneratorState -> GeneratorState
+copyChoices src dest = dest { stateChoices = stateChoices src, stateCount = stateCount src  }
+
+
+-- given a state at one level, creates state that can be used for generating children one
+-- level below
+childrenState :: GeneratorState -> GeneratorState
+childrenState = deepen . clearInstances
+
+
+-- given an original type and a new one, creates type variable bindings in the generator state
+-- that would transform the first into the latter 
 instantiateState :: Type -> Type -> GeneratorState -> GeneratorState
 instantiateState originalType newType originalState =
     case originalType of
@@ -152,53 +183,53 @@ instantiateState originalType newType originalState =
                                                       }
       (PolymorphicType _ _)  -> foldr instantiator originalState $ zip (vars originalType) (vars newType)
                                where
+                                 -- Creates type variable bindings in generator state
+                                 -- before: type before instantiation
+                                 -- after:  type after instantiation
+                                 instantiator :: (Type, Type) -> GeneratorState -> GeneratorState
                                  instantiator = (\(before, after) state ->
-                                                     let varMap = (stateVariableMap state) in
-                                                     if member before varMap && (varMap ! before) /= after
-                                                     then error $ showTypeMismatch (varMap ! before) after
-                                                     else instantiateState before after state
+                                                     let varMap = (stateVariableMap state)
+                                                     in
+                                                       -- is the variable already bound?
+                                                       if member before varMap && (varMap ! before) /= after
+                                                       then error $ showTypeMismatch (varMap ! before) after
+                                                       else instantiateState before after state
                                                 )
 
-clearInstances :: GeneratorState -> GeneratorState
-clearInstances state = state { stateVariableMap = fromList [] }
-
+-- subtitutes type variables in a type using variable map from a generator state
 instantiateType :: GeneratorState -> Type -> Type
 instantiateType state t = case t of
-                            t@(PrimitiveType _) -> t
-                            t@(TypeVariable _)  -> if member t (stateVariableMap state)
-                                                   then (stateVariableMap state) ! t
-                                                   else t
+                            t@(PrimitiveType _)         -> t
+                            t@(TypeVariable _ )         -> if member t (stateVariableMap state)
+                                                           then (stateVariableMap state) ! t
+                                                           else t
                             (PolymorphicType name vars) -> (PolymorphicType name (map (instantiateType state) vars))
-
-deepen :: GeneratorState -> GeneratorState
-deepen state = state { stateDepth = 1 + stateDepth state }
 
 
 -- a `isTypeCompatible` b iff a can be substituted for b
 isTypeCompatible :: Type -> Type -> Bool
-(PrimitiveType nameA) `isTypeCompatible` (PrimitiveType nameB) = nameA == nameB
-(TypeVariable _)      `isTypeCompatible` _                     = True
-_                     `isTypeCompatible` (TypeVariable _)      = True
+(PrimitiveType nameA)         `isTypeCompatible` (PrimitiveType nameB)         = nameA == nameB
+(TypeVariable _)              `isTypeCompatible` _                             = True
+_                             `isTypeCompatible` (TypeVariable _)              = True
+
 (PolymorphicType nameA varsA) `isTypeCompatible` (PolymorphicType nameB varsB) = 
-    nameA == nameB && length varsA == length varsB && all (\(a,b) -> a `isTypeCompatible` b) (zip varsA varsB)
-_ `isTypeCompatible` _ = False
+    nameA        == nameB             &&
+    length varsA == length varsB      && 
+    all (\(a, b) -> a `isTypeCompatible` b) (zip varsA varsB)
+
+_                              `isTypeCompatible` _                            = False
 
 
 -- gets all expansions that can be substituted for the given type
 compatibleExpansions :: Type -> [Expansion] -> [Expansion]
 compatibleExpansions t = filter $ (`isTypeCompatible` t) . expansionType
 
-choose :: [Int] -> [a] -> a
-choose choices xs = xs !! ((`mod` size) . head) choices
-                    where
-                      size = length xs
-
 
 -- chooses a type-compatible expansion for the given type, if any
 chooseExpansion :: GeneratorState -> Type -> Possibly (Expansion, GeneratorState)
 chooseExpansion state t = if null exs
                           then Error $ "Could not find a compatible expansion for type " ++ show t
-                          else Good $ (instantiateExpansion state t (choose (stateChoices state) exs), advance state)
+                          else Good $ (instantiateExpansion state t (choose (stateChoices state) exs), advanceChoices state)
                               where allCompatible = compatibleExpansions t (stateExpansions state)
                                     exs = if (stateDepth state) == (stateMaxDepth state) - 1
                                           then filter (not . hasNonterminals) allCompatible
@@ -212,12 +243,6 @@ expandTerms state (t:ts) = expand state t >>=
                            (\(tree, nextState) -> expandTerms nextState ts >>=
                             (\(trees, finalState) -> Good $ (tree:trees, finalState)))
 
-copyChoices :: GeneratorState -> GeneratorState -> GeneratorState
-copyChoices src dest = dest { stateChoices = stateChoices src, stateCount = stateCount src  }
-
-childrenState :: GeneratorState -> GeneratorState
-childrenState = deepen . clearInstances
-
 instantiateExpansion :: GeneratorState -> Type -> Expansion -> Expansion
 instantiateExpansion state requiredType ex = Expansion terms $ (instantiateType newState . expansionType) ex
                                              where
@@ -225,14 +250,14 @@ instantiateExpansion state requiredType ex = Expansion terms $ (instantiateType 
                                                terms = map termMapper (expansionTerms ex)
                                                        
                                                termMapper t@(TerminalTerm _) = t
-                                               termMapper (NonterminalTerm name originalType) =
-                                                   (NonterminalTerm name (instantiateType newState originalType))
+                                               termMapper (NonterminalTerm originalType) =
+                                                   NonterminalTerm $ instantiateType newState originalType
 
 
--- expands a single term
+-- generates a syntax tree which is type-compatible with the given term
 expand :: GeneratorState -> Term -> Possibly (SyntaxTree, GeneratorState)
 expand state (TerminalTerm name) = Good (Leaf name, state)
-expand initState term@(NonterminalTerm name requiredType)
+expand initState term@(NonterminalTerm requiredType)
            | stateDepth initState >= stateMaxDepth initState = Error "Maximum depth exceeded"
            | otherwise = chooseExpansion initState (instantiateType initState requiredType) >>=
                          (\(expansion, state) ->
@@ -246,9 +271,13 @@ expand initState term@(NonterminalTerm name requiredType)
                                       instantiateState requiredType finalExpansionType
                                                            (copyChoices childrenFinalState initState))))
 
+
+
 {--
   DEBUG DEFINITIONS
 --}
+
+
 
 typeA = (PolymorphicType "List" [(PolymorphicType "Func"
                                  [(TypeVariable "a"), (PolymorphicType "Func" [TypeVariable "b", TypeVariable "c"])])])
@@ -270,14 +299,14 @@ vC = TypeVariable "c"
 
 tList = PolymorphicType "List" [vA]
 
-expansion1 = (Expansion [(NonterminalTerm "num" tNumber), (TerminalTerm "+"), (NonterminalTerm "num" tNumber)] tNumber)
-expansion2 = (Expansion [(NonterminalTerm "num" tNumber), (TerminalTerm "*"), (NonterminalTerm "num" tNumber)] tNumber)
+expansion1 = (Expansion [(NonterminalTerm tNumber), (TerminalTerm "+"), (NonterminalTerm tNumber)] tNumber)
+expansion2 = (Expansion [(NonterminalTerm tNumber), (TerminalTerm "*"), (NonterminalTerm tNumber)] tNumber)
 
 expansion3 = Expansion [(TerminalTerm "1")] tNumber
 expansion4 = Expansion [(TerminalTerm "2")] tNumber
 
-expansion5 = (Expansion [(NonterminalTerm "" tString), (TerminalTerm "++"), (NonterminalTerm "" tString)] tString)
-expansion6 = (Expansion [(NonterminalTerm "" vA), (TerminalTerm ":"), (NonterminalTerm "" tList)] tList)
+expansion5 = (Expansion [(NonterminalTerm tString), (TerminalTerm "++"), (NonterminalTerm tString)] tString)
+expansion6 = (Expansion [(NonterminalTerm vA), (TerminalTerm ":"), (NonterminalTerm tList)] tList)
 expansion7 = (Expansion [TerminalTerm "[]"] tList)
 
 expansion8 = (Expansion [TerminalTerm "hello"] tString)
@@ -292,15 +321,15 @@ mkFunc arg ret = PolymorphicType "Func" [arg, ret]
 lparen = TerminalTerm "("
 rparen = TerminalTerm ")"
 
-sexp1 = Expansion [lparen, (NonterminalTerm "func" (mkFunc vA vB)), (NonterminalTerm "" vA), rparen] vB
+sexp1 = Expansion [lparen, (NonterminalTerm (mkFunc vA vB)), (NonterminalTerm vA), rparen] vB
 sexp2 = Expansion [lparen, (TerminalTerm "lambda"), lparen, (TerminalTerm "x"), rparen,
-                             (NonterminalTerm "expr" vA), rparen] (mkFunc vB vA)
-sexp3 = Expansion [lparen, TerminalTerm "+", (NonterminalTerm "" tNumber), (NonterminalTerm "" tNumber), rparen] tNumber
-sexp4 = Expansion [lparen, TerminalTerm "-", (NonterminalTerm "" tNumber), (NonterminalTerm "" tNumber), rparen] tNumber
-sexp5 = Expansion [lparen, TerminalTerm "*", (NonterminalTerm "" tNumber), (NonterminalTerm "" tNumber), rparen] tNumber
-sexp6 = Expansion [lparen, TerminalTerm "/", (NonterminalTerm "" tNumber), (NonterminalTerm "" tNumber), rparen] tNumber
+                             (NonterminalTerm vA), rparen] (mkFunc vB vA)
+sexp3 = Expansion [lparen, TerminalTerm "+", (NonterminalTerm tNumber), (NonterminalTerm tNumber), rparen] tNumber
+sexp4 = Expansion [lparen, TerminalTerm "-", (NonterminalTerm tNumber), (NonterminalTerm tNumber), rparen] tNumber
+sexp5 = Expansion [lparen, TerminalTerm "*", (NonterminalTerm tNumber), (NonterminalTerm tNumber), rparen] tNumber
+sexp6 = Expansion [lparen, TerminalTerm "/", (NonterminalTerm tNumber), (NonterminalTerm tNumber), rparen] tNumber
 
-sexp7 = Expansion [lparen, TerminalTerm "cons", NonterminalTerm "" vA, NonterminalTerm "" tList] tList
+sexp7 = Expansion [lparen, TerminalTerm "cons", NonterminalTerm vA, NonterminalTerm tList] tList
 
 sexp8 = Expansion [(TerminalTerm "1")] tNumber
 sexp9 = Expansion [(TerminalTerm "2")] tNumber
