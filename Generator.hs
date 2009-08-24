@@ -259,17 +259,15 @@ expand :: GeneratorState -> Term -> Possibly (SyntaxTree, GeneratorState)
 expand state (TerminalTerm name) = Good (Leaf name, state)
 expand initState term@(NonterminalTerm requiredType)
            | stateDepth initState >= stateMaxDepth initState = Error "Maximum depth exceeded"
-           | otherwise = chooseExpansion initState (instantiateType initState requiredType) >>=
-                         (\(expansion, state) ->
-                              trace ("Chose expansion " ++ show expansion ++ ". Req'd type: " ++ show requiredType)
-                              trace ("Count: " ++ (show . stateCount) state)
-                              expandTerms (childrenState state) (expansionTerms expansion) >>=
-                         (\(children, childrenFinalState) ->
-                              let finalExpansionType = instantiateType childrenFinalState (expansionType expansion)
-                              in
-                                Good (Branch term finalExpansionType children,
-                                      instantiateState requiredType finalExpansionType
-                                                           (copyChoices childrenFinalState initState))))
+           | otherwise =
+               do
+                 (expansion, state)             <- chooseExpansion initState (instantiateType initState requiredType)
+                 (children, childrenFinalState) <- expandTerms (childrenState state) (expansionTerms expansion)
+                                                   
+                 let finalExpansionType = instantiateType childrenFinalState (expansionType expansion)
+                                          
+                 Good (Branch term finalExpansionType children,
+                       instantiateState requiredType finalExpansionType (copyChoices childrenFinalState initState))
 
 
 
