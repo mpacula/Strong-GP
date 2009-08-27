@@ -1,20 +1,31 @@
 {--
   Defines datatypes for expressing metalanguage rules
---}
+-}
+
+
+module Generator
+    (
+      isNonterminal
+    , isTerminal
+    , Term (..)
+    , Expansion (..)
+    , hasNonterminals
+    ) where
+
 
 import Debug.Trace (trace)
 import System.Random (mkStdGen, randoms, getStdGen)
 import Data.List (intersperse, find)
 import Data.Map (Map, fromList, (!), member, insert)
-import Types (Type (..))
+import Types (Type (..), isPrimitive, isPolymorphic, isTypeVariable)
 import Possibly (Possibly (Good, Error))
 import Utils (choose)
 
 
 
-{--
+{-
   TERMINALS & NONTERMINALS
---}
+-}
 
 
 
@@ -35,9 +46,9 @@ isTerminal = not . isNonterminal
 
 
 
-{--
+{-
   EXPANSIONS
---}
+-}
 
 
 
@@ -59,9 +70,9 @@ instance Show Expansion where
 
 
 
-{--
+{-
   SYNTAX TREES
---}
+-}
 
 
 
@@ -103,9 +114,9 @@ printSyntaxTreeHeader tree = case tree of
 
 
 
-{--
+{-
   SYNTAX TREE GENERATION
---}
+-}
 
 
 
@@ -127,9 +138,9 @@ data GeneratorState = GeneratorState
 
 
 
-{--
+{-
   STATE TRANSFORMATIONS
---}
+-}
 
 
 
@@ -228,7 +239,8 @@ compatibleExpansions t = filter $ (`isTypeCompatible` t) . expansionType
 -- chooses a type-compatible expansion for the given type, if any
 chooseExpansion :: GeneratorState -> Type -> Possibly (Expansion, GeneratorState)
 chooseExpansion state t = if null exs
-                          then Error $ "Could not find a compatible expansion for type " ++ show t
+                          then Error $ "Could not find a compatible expansion for type " ++ show t ++
+                                   " at depth " ++ show (stateDepth state)
                           else Good $ (instantiateExpansion state t (choose (stateChoices state) exs), advanceChoices state)
                               where allCompatible = compatibleExpansions t (stateExpansions state)
                                     exs = if (stateDepth state) == (stateMaxDepth state) - 1
@@ -243,6 +255,9 @@ expandTerms state (t:ts) = expand state t >>=
                            (\(tree, nextState) -> expandTerms nextState ts >>=
                             (\(trees, finalState) -> Good $ (tree:trees, finalState)))
 
+
+-- given a required type for an expansion, substitutes concrete values for type variables in that expansion
+-- If both expansions share type variable names, they will be renamed before substitution
 instantiateExpansion :: GeneratorState -> Type -> Expansion -> Expansion
 instantiateExpansion state requiredType ex = Expansion terms $ (instantiateType newState . expansionType) ex
                                              where
@@ -251,7 +266,34 @@ instantiateExpansion state requiredType ex = Expansion terms $ (instantiateType 
                                                        
                                                termMapper t@(TerminalTerm _) = t
                                                termMapper (NonterminalTerm originalType) =
-                                                   NonterminalTerm $ instantiateType newState originalType
+                                                   NonterminalTerm $ instantiateType newState (makeVariablesDistinct requiredType originalType)
+
+
+-- given 2 types, renames variable types in the second one so that the two have none in common
+makeVariablesDistinct :: Type -> Type -> Type
+makeVariablesDistinct other this = case this of
+                                     (TypeVariable name) -> (TypeVariable $ uniqueName name 2 otherNames)
+                                     (PolymorphicType name vars) -> (PolymorphicType name (map (makeVariablesDistinct other) vars))
+                                     t -> t
+                                   where
+                                     otherNames = variableNames other
+                                     
+
+-- gets names of all type variables in a type. The list can contain duplicates
+variableNames :: Type -> [String]
+variableNames (PrimitiveType _) = []
+variableNames (TypeVariable name) = [name]
+variableNames (PolymorphicType _ vars) = (concat . map variableNames) vars
+
+
+-- given a prototype name and a suffix, increments the suffix as many times as necessary to make
+-- (prototype ++ show suffix) name distinct from any of the names in a given list
+uniqueName :: String -> Int -> [String] -> String
+uniqueName prototype suffix others = if try `notElem` others
+                                     then try
+                                     else uniqueName prototype (suffix + 1) others
+                                         where
+                                           try = prototype ++ show suffix
 
 
 -- generates a syntax tree which is type-compatible with the given term
@@ -271,9 +313,9 @@ expand initState term@(NonterminalTerm requiredType)
 
 
 
-{--
+{-
   DEBUG DEFINITIONS
---}
+-}
 
 
 
@@ -321,7 +363,7 @@ rparen = TerminalTerm ")"
 
 sexp1 = Expansion [lparen, (NonterminalTerm (mkFunc vA vB)), (NonterminalTerm vA), rparen] vB
 sexp2 = Expansion [lparen, (TerminalTerm "lambda"), lparen, (TerminalTerm "x"), rparen,
-                             (NonterminalTerm vA), rparen] (mkFunc vB vA)
+                             (NonterminalTerm vB), rparen] (mkFunc vA vB)
 sexp3 = Expansion [lparen, TerminalTerm "+", (NonterminalTerm tNumber), (NonterminalTerm tNumber), rparen] tNumber
 sexp4 = Expansion [lparen, TerminalTerm "-", (NonterminalTerm tNumber), (NonterminalTerm tNumber), rparen] tNumber
 sexp5 = Expansion [lparen, TerminalTerm "*", (NonterminalTerm tNumber), (NonterminalTerm tNumber), rparen] tNumber
@@ -335,4 +377,4 @@ sexp10 = Expansion [(TerminalTerm "3")] tNumber
 sexp11 = Expansion [(TerminalTerm "4")] tNumber
 
 sexps = [sexp1, sexp2, sexp3, sexp4, sexp5, sexp6, sexp7, sexp8, sexp9, sexp10, sexp11]
-sexpState = startState sexps (randoms (mkStdGen 12) :: [Int]) 5
+sexpState = startState sexps (randoms (mkStdGen 1) :: [Int]) 5

@@ -5,6 +5,9 @@
 module Types 
     (
       Type(..)
+    , isPrimitive
+    , isPolymorphic
+    , isTypeVariable
     ) where
 
 
@@ -21,3 +24,13 @@ instance Show Type where
     show (PolymorphicType name vars)       = "(" ++ name ++ " " ++ (concat . intersperse " " . map show) vars ++ ")"
     show (TypeVariable name)               = name
 
+
+isPrimitive, isPolymorphic, isTypeVariable :: Type -> Bool
+isPrimitive (PrimitiveType _)       = True
+isPrimitive _                       = False
+
+isPolymorphic (PolymorphicType _ _) = True
+isPolymorphic _ = False
+
+isTypeVariable (TypeVariable _)     = True
+isTypeVariable _                    = False
