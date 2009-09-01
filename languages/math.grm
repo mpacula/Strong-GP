@@ -1,0 +1,13 @@
+<Num> <BinOp> <Num> :: Num
++ :: BinOp
+- :: BinOp
+* :: BinOp
+/ :: BinOp
+% :: BinOp
+<Func> ( <Num> ) :: Num
+sin :: Func
+cos :: Func
+tan :: Func
+1 :: Num
+2 :: Num
+3 :: Num
