@@ -2,6 +2,7 @@ import Test.QuickCheck
 import Control.Monad
 import Generator
 import Types
+import Utils (xor)
 
 {-
   TYPES
@@ -39,6 +40,7 @@ instance Arbitrary Char where
     coarbitrary = undefined
     arbitrary = elements (['A'..'Z'] ++ ['a' .. 'z'])
 
+
 instance Arbitrary Term where
     coarbitrary = undefined
     arbitrary =
@@ -55,9 +57,6 @@ instance Arbitrary Expansion where
       t <- arbitrary
       return $ Expansion terms t
 
-
-xor :: Bool -> Bool -> Bool
-xor x y = (x || y) && not (x && y)
 
 prop_either_terminal x = (isTerminal x) `xor` (isNonterminal x)
 

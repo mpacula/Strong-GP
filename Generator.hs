@@ -1,4 +1,4 @@
-{--
+ {--
   Defines datatypes for expressing metalanguage rules
 -}
 
@@ -9,7 +9,13 @@ module Generator
     , isTerminal
     , Term (..)
     , Expansion (..)
+    , SyntaxTree (..)
+    , GeneratorState (stateChoices)
     , hasNonterminals
+    , expandTerms
+    , expand
+    , startState
+    , flattenTree
     ) where
 
 
@@ -17,7 +23,7 @@ import Debug.Trace (trace)
 import System.Random (mkStdGen, randoms, getStdGen)
 import Data.List (intersperse, find)
 import Data.Map (Map, fromList, (!), member, insert)
-import Types (Type (..), isPrimitive, isPolymorphic, isTypeVariable)
+import Types (Type (..), isPrimitive, isPolymorphic, isTypeVariable, isTypeCompatible)
 import Possibly (Possibly (Good, Error))
 import Utils (choose)
 
@@ -31,6 +37,7 @@ import Utils (choose)
 
 data Term = NonterminalTerm { termRequiredType :: Type } 
           | TerminalTerm    { termName :: String }
+            deriving (Eq)
 
 
 instance Show Term where
@@ -81,6 +88,7 @@ data SyntaxTree = Branch { branchTerm :: Term,                  -- the term that
                            branchType :: Type,                  -- type of the branch
                            branchChildren :: [SyntaxTree] }     -- subtrees
                 | Leaf   { leafValue :: String }
+                  deriving (Eq)
 
 
 instance Show SyntaxTree where
@@ -97,7 +105,7 @@ flattenTree (Branch _ _ children) = (concat . intersperse " " . map flattenTree)
 printSyntaxTree :: Int -> SyntaxTree -> String
 printSyntaxTree ident tree = let header = printSyntaxTreeHeader tree in
                              case tree of                                
-                               (Leaf value)                -> "- " ++ header
+                               (Leaf value)             -> "- " ++ header
                                (Branch term t children) ->
                                    "- " ++ header ++ "\n" ++
                                    (concat . map (identString ++)) subtrees
@@ -165,7 +173,7 @@ clearInstances :: GeneratorState -> GeneratorState
 clearInstances state = state { stateVariableMap = fromList [] }
 
 
--- increased the depth in a geneartor state
+-- increased the depth in a generator state
 deepen :: GeneratorState -> GeneratorState
 deepen state = state { stateDepth = 1 + stateDepth state }
 
@@ -217,20 +225,6 @@ instantiateType state t = case t of
                             (PolymorphicType name vars) -> (PolymorphicType name (map (instantiateType state) vars))
 
 
--- a `isTypeCompatible` b iff a can be substituted for b
-isTypeCompatible :: Type -> Type -> Bool
-(PrimitiveType nameA)         `isTypeCompatible` (PrimitiveType nameB)         = nameA == nameB
-(TypeVariable _)              `isTypeCompatible` _                             = True
-_                             `isTypeCompatible` (TypeVariable _)              = True
-
-(PolymorphicType nameA varsA) `isTypeCompatible` (PolymorphicType nameB varsB) = 
-    nameA        == nameB             &&
-    length varsA == length varsB      && 
-    all (\(a, b) -> a `isTypeCompatible` b) (zip varsA varsB)
-
-_                              `isTypeCompatible` _                            = False
-
-
 -- gets all expansions that can be substituted for the given type
 compatibleExpansions :: Type -> [Expansion] -> [Expansion]
 compatibleExpansions t = filter $ (`isTypeCompatible` t) . expansionType
@@ -273,7 +267,8 @@ instantiateExpansion state requiredType ex = Expansion terms $ (instantiateType 
 makeVariablesDistinct :: Type -> Type -> Type
 makeVariablesDistinct other this = case this of
                                      (TypeVariable name) -> (TypeVariable $ uniqueName name 2 otherNames)
-                                     (PolymorphicType name vars) -> (PolymorphicType name (map (makeVariablesDistinct other) vars))
+                                     (PolymorphicType name vars) ->
+                                         (PolymorphicType name (map (makeVariablesDistinct other) vars))
                                      t -> t
                                    where
                                      otherNames = variableNames other
