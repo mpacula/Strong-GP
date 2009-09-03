@@ -19,9 +19,11 @@ import Data.List (partition)
 -- 
 -- WARNING: the list has to be finite
 choose :: [Int] -> [a] -> a
-choose choices xs = xs !! ((`mod` size) . head) choices
-                    where
-                      size = length xs
+choose choices xs
+    | size == 0        = error "No items to choose from (list is empty)"
+    | otherwise        = xs !! ((`mod` size) . head) choices
+    where
+      size = length xs
 
 
 -- binary exclusive or

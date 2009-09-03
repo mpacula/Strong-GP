@@ -5,6 +5,7 @@
 
 module Genetic
     (
+     startEvolving, startTerm, defaultReporter, evoState
     ) where
 
 
@@ -122,12 +123,20 @@ replace root toReplace replaceWith =
   GENETIC OPERATORS - MUTATE & CROSSOVER
 -}
 
+-- returns the first list if not null, otherwise returns the second one
+safeNull :: [a] -> [a] -> [a]
+safeNull xs ys
+    | null xs   = ys
+    | otherwise = xs
+
 -- performs a genetic crossover of 2 syntax trees. The returned tree is the first tree
 -- with a random subtree replaced by a compatible one from the second tree
 crossover :: EvolverState -> SyntaxTree -> SyntaxTree -> (SyntaxTree, EvolverState)
 crossover state tree1 tree2 = let sub_tree1 = choose (choices state)           (subtrees tree1)
                                   sub_tree2 = choose (choices (advance state)) compatibles
-                                  compatibles = compatibleSubtrees ((branchType . subtree) sub_tree1) (subtrees tree2)
+                                  requiredType = ((branchType . subtree) sub_tree1)
+                                  compatibles = safeNull (compatibleSubtrees requiredType (subtrees tree2))
+                                                         (compatibleSubtrees requiredType (subtrees tree1))
                               in
                                 ( replace tree1 sub_tree1 (subtree sub_tree2)
                                 , advance $ advance state
@@ -304,8 +313,8 @@ evoState = EvolverState { choices             = randoms (mkStdGen 42)           
                         , probabilities       = randomRs (0.0, 1.0) (mkStdGen 43) :: [Double]
                         , grammar             = possibly id (\_ -> []) expansions
                         , maxTreeDepth        = 100
-                        , mutationProbability = 0.0
-                        , evaluator           = Evaluator { runEval = (\t -> return 0)
+                        , mutationProbability = 0.1
+                        , evaluator           = Evaluator { runEval = (\t -> return 1)
                                                           }
                         , populationSize      = 100
                         }
@@ -329,6 +338,3 @@ applyN :: (a -> a) -> Int -> a -> a
 applyN f c arg
            | c <= 1   = f arg
            | otherwise = f $ applyN f (c - 1) arg
-
--- causes invalid output: crossover (evoState { choices = [2990934671504263886, -3242827753972285241] }) tree1 tree2
--- types mismatch, substitutes a Num for a BinOp
