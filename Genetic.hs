@@ -71,7 +71,8 @@ generatePopulation state startTerm = do
   return (trees, mergeStates state finalGeneratorState)
 
 
--- Gets all subtrees of the given syntax tree, without leaves
+-- Gets all subtrees of the given syntax tree, without leaves. The first element is guaranteed to be the root
+-- tree
 subtrees :: SyntaxTree -> [Subtree]
 subtrees = subtrees' []
     where
@@ -124,11 +125,14 @@ replace root toReplace replaceWith =
 -- performs a genetic crossover of 2 syntax trees. The returned tree is the first tree
 -- with a random subtree replaced by a compatible one from the second tree
 crossover :: EvolverState -> SyntaxTree -> SyntaxTree -> (SyntaxTree, EvolverState)
-crossover state tree1 tree2 = let sub_tree1 = choose (choices state) (subtrees tree1)
-                                  sub_tree2 = choose (choices (advance state)) (subtrees tree2)
+crossover state tree1 tree2 = let sub_tree1 = choose (choices state)           (subtrees tree1)
+                                  sub_tree2 = choose (choices (advance state)) compatibles
+                                  compatibles = compatibleSubtrees ((branchType . subtree) sub_tree1) (subtrees tree2)
                               in
-                                (replace tree1 sub_tree1 (subtree sub_tree2), advance $ advance state)
-
+                                ( replace tree1 sub_tree1 (subtree sub_tree2)
+                                , advance $ advance state
+                                )
+    
 
 -- mutates a random subtree with the probability given in the evolver state
 mutate :: EvolverState -> SyntaxTree -> (SyntaxTree, EvolverState)
@@ -300,10 +304,10 @@ evoState = EvolverState { choices             = randoms (mkStdGen 42)           
                         , probabilities       = randomRs (0.0, 1.0) (mkStdGen 43) :: [Double]
                         , grammar             = possibly id (\_ -> []) expansions
                         , maxTreeDepth        = 100
-                        , mutationProbability = 0.1
+                        , mutationProbability = 0.0
                         , evaluator           = Evaluator { runEval = (\t -> return 0)
                                                           }
-                        , populationSize      = 1 
+                        , populationSize      = 100
                         }
 
 
@@ -320,3 +324,11 @@ population = let p = generatePopulation evoState startTerm
 tree1 = population !! 0
 tree2 = population !! 1
 tree3 = population !! 2
+
+applyN :: (a -> a) -> Int -> a -> a
+applyN f c arg
+           | c <= 1   = f arg
+           | otherwise = f $ applyN f (c - 1) arg
+
+-- causes invalid output: crossover (evoState { choices = [2990934671504263886, -3242827753972285241] }) tree1 tree2
+-- types mismatch, substitutes a Num for a BinOp
