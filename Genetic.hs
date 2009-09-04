@@ -5,17 +5,24 @@
 
 module Genetic
     (
-     startEvolving, startTerm, defaultReporter, evoState
+      startEvolving
+    , EvolverState (..)
+    , Evaluator (..)
+    , EvolutionReporter
+    , EvaluatedSyntaxTree (..)
+    , GenerationMerger
+    , bestMember
+    , averageFitness
     ) where
 
 
-import Generator
-import Possibly
-import Types
+import Generator (Term (..), SyntaxTree (..), Expansion, GeneratorState (..), startState, expand, expandTerms)
+import Possibly (Possibly (..), possibly)
+import Types (Type (..), isTypeCompatible)
 import GrammarParser (parseGrammar)
-import Utils
+import Utils (choose, indexFoldr)
+import System.Random (mkStdGen, randoms, randomRs)
 import Debug.Trace (trace)
-import System.Random
 
 
 
@@ -44,6 +51,7 @@ data EvolverState = EvolverState { choices             :: [Int]
                                  , mutationProbability :: Double
                                  , evaluator           :: Evaluator
                                  , populationSize      :: Int
+                                 , merger              :: GenerationMerger
                                  }
 
 instance Show EvolverState where
@@ -180,6 +188,12 @@ data EvaluatedSyntaxTree = EvaluatedSyntaxTree { fitness :: Double
                                                , tree    :: SyntaxTree
                                                } deriving (Show)
 
+instance Eq EvaluatedSyntaxTree where
+    a == b = (tree a) == (tree b)
+
+instance Ord EvaluatedSyntaxTree where
+    a `compare` b = (fitness a) `compare` (fitness b)
+
 
 -- Evaluates fitness of a single tree
 evalTree :: EvolverState -> SyntaxTree -> IO (EvaluatedSyntaxTree)
@@ -262,22 +276,26 @@ evolvePopulation initState member population
                           ( evolvedTree : otherEvolvedTrees
                           , finalState
                           )
-        
+       
+-- merges an old generation with the new one. Can be used to preserve best members from the old
+-- generation etc
+type GenerationMerger = [EvaluatedSyntaxTree] -> [EvaluatedSyntaxTree] -> [EvaluatedSyntaxTree]
 
 -- Evolves a population for a number of epochs
-evolve :: EvolverState -> Int -> EvolutionReporter -> Population -> IO (Population)
+evolve :: EvolverState -> Int -> EvolutionReporter -> [EvaluatedSyntaxTree] -> IO ([EvaluatedSyntaxTree])
 evolve initState epochs reporter population
     | epochs == 0    = return population
-    | otherwise      = do evaluated <- evaluate initState population
-                          let normalized                      = normalizeFitnesses evaluated
+    | otherwise      = do let normalized                      = normalizeFitnesses population
                               (evolvedPopulation, finalState) = evolvePopulation initState (populationSize initState) normalized
-                          reporter evaluated
-                          evolve finalState (epochs - 1) reporter evolvedPopulation
+                          evaluatedEvolvedPopulation <- evaluate finalState evolvedPopulation
+                          reporter population
+                          evolve finalState (epochs - 1) reporter ((merger finalState) population evaluatedEvolvedPopulation)
 
 
 -- generates a new population and evolves it for a number of epochs
-startEvolving :: EvolverState -> Term -> Int -> EvolutionReporter -> IO (Population)
-startEvolving initState startTerm epochs reporter = evolve nextState epochs reporter initialPopulation
+startEvolving :: EvolverState -> Term -> Int -> EvolutionReporter -> IO ([EvaluatedSyntaxTree])
+startEvolving initState startTerm epochs reporter = do evaluated <- evaluate initState initialPopulation
+                                                       evolve nextState epochs reporter evaluated
                                                     where
                                                       (initialPopulation, nextState) =
                                                           case generatePopulation initState startTerm of
@@ -298,8 +316,7 @@ expansions = parseGrammar $ unlines ["<Num> <BinOp> <Num> :: Num"
                                     , "- :: BinOp"
                                     , "* :: BinOp"
                                     , "/ :: BinOp"
-                                    , "% :: BinOp"
-                                    , "<Func> ( <Num> ) :: Num"
+                                    , "<Func> <Num> :: Num"
                                     , "sin :: Func"
                                     , "cos :: Func"
                                     , "tan :: Func"
@@ -317,6 +334,7 @@ evoState = EvolverState { choices             = randoms (mkStdGen 42)           
                         , evaluator           = Evaluator { runEval = (\t -> return 1)
                                                           }
                         , populationSize      = 100
+                        , merger              = (\old new -> new)
                         }
 
 
@@ -338,3 +356,5 @@ applyN :: (a -> a) -> Int -> a -> a
 applyN f c arg
            | c <= 1   = f arg
            | otherwise = f $ applyN f (c - 1) arg
+
+
