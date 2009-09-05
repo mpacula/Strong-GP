@@ -11,6 +11,7 @@ import System.Random
 import Data.List (sort)
 import Debug.Trace (trace)
 import Data.Map (Map (..), fromList, (!), insert, member)
+import Utils (fact)
 import qualified Data.Char as Ch
 
 -- represents all valid values within the language
@@ -86,6 +87,7 @@ evalFunc cs = case cs of
                  "*" -> BinaryFunc $ liftBinFunc (*)
                  "/" -> BinaryFunc $ liftBinFunc (\x y -> if y == 0 then 1000 else x / y)
                  "^" -> BinaryFunc $ liftBinFunc (\x y -> x ^^ (floor y))
+                 "fact" -> UnaryFunc $ liftUnaryFunc (fromIntegral . fact . floor)
                  "sin" -> UnaryFunc $ liftUnaryFunc sin
                  "cos" -> UnaryFunc $ liftUnaryFunc cos
                  "tan" -> UnaryFunc $ liftUnaryFunc tan
@@ -137,8 +139,8 @@ regressionError :: (Double -> Double) -> (Double, Double) -> Int -> SyntaxTree -
 regressionError f (rmin, rmax) samples tree = foldr (+) 0 errors
                                               where
                                                 step = (rmax - rmin) / (fromIntegral samples)
-                                                samplingPts = [rmin, rmin + step, rmax]
-                                                errors = map ((^2) . (\pt -> (f pt) - (evalAsFunc tree pt))) samplingPts
+                                                samplingPts = [rmin, rmin + step .. rmax]
+                                                errors = map (\pt -> ((f pt) - (evalAsFunc tree pt)) ^ 2) samplingPts
 
 
 expansions = parseGrammar $ unlines ["<Num> <BinOp> <Num> :: Num"
@@ -148,6 +150,7 @@ expansions = parseGrammar $ unlines ["<Num> <BinOp> <Num> :: Num"
                                     , "/ :: BinOp"
                                     , "^ :: BinOp"
 --                                    , "<Func> <Num> :: Num"
+--                                    , "fact :: Func"
 --                                    , "sin :: Func"
 --                                    , "cos :: Func"
 --                                    , "tan :: Func"
@@ -164,25 +167,29 @@ expansions = parseGrammar $ unlines ["<Num> <BinOp> <Num> :: Num"
                                     , "x :: Num"]
 
 testedFunction :: Double -> Double
-testedFunction = sin
+testedFunction = (\x -> sin x)
 
 
 bestSelector :: GenerationMerger
-bestSelector old new = take (length new) result
+bestSelector old new = select result ++ select new
                        where
                          result = (reverse . sort) (old ++ new)
+                         size = length new
+                         select = take (floor ((fromIntegral size) / 2))
 
 
 evoState = EvolverState { choices             = randoms (mkStdGen 42)             :: [Int]
                         , probabilities       = randomRs (0.0, 1.0) (mkStdGen 43) :: [Double]
                         , grammar             = possibly id (\_ -> []) expansions
                         , maxTreeDepth        = 100
-                        , mutationProbability = 1
+                        , mutationProbability = 0.5
                         , evaluator           =
                             Evaluator { runEval = (\tree ->
-                                                       let error = regressionError testedFunction (-5, 5) 1000 tree
+                                                       let error = regressionError testedFunction (-1, 1) 100 tree
                                                        in
-                                                         return $ 1.0 / (0.001 + error)
+                                                         if isNaN error
+                                                         then return 0
+                                                         else return $ 1.0 / (0.001 + error)
                                                   )
                                       }
                         , populationSize      = 100
@@ -196,3 +203,6 @@ startTerm = (NonterminalTerm (PrimitiveType "Num"))
 
 evoReporter :: EvolutionReporter
 evoReporter trees = putStrLn $ "Mean fitness: " ++ (show . averageFitness) trees ++ ". Best: " ++ (show . fitness . bestMember) trees
+
+evalBest :: [EvaluatedSyntaxTree] -> Double -> Double
+evalBest population x = (((flip evalAsFunc) x) . tree) $ bestMember population

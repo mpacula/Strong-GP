@@ -9,6 +9,7 @@ module Utils
    , xor
    , partitionEithers
    , indexFoldr
+   , fact
     ) where
 
 
@@ -53,3 +54,10 @@ indexFoldr f initial xs = snd $ foldr folder (length xs - 1, initial) xs
                           where
                             folder = (\x (index, sofar) -> (index - 1, f index x sofar))
 
+
+
+-- computes the factorial of a number
+fact :: Int -> Int
+fact n
+     | n <= 0    = 1
+     | otherwise = n * fact (n - 1) 

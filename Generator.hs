@@ -99,7 +99,11 @@ instance Show SyntaxTree where
 -- shows terminals from all leaves separated by spaces
 flattenTree :: SyntaxTree -> String
 flattenTree (Leaf value) = value
-flattenTree (Branch _ _ children) = (concat . intersperse " " . map flattenTree) children
+flattenTree (Branch _ _ children) = let str = (concat . intersperse " " . map flattenTree) children
+                                    in
+                                      if length children == 1
+                                      then str
+                                      else "(" ++ str ++ ")"
 
 
 -- pretty prints a syntax tree
