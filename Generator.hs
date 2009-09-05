@@ -92,7 +92,8 @@ data SyntaxTree = Branch { branchTerm :: Term,                  -- the term that
 
 
 instance Show SyntaxTree where
-    show = ("\n" ++) . printSyntaxTree 1
+    show = ("\n" ++) . printSyntaxTree 1 10
+--    show tree = "SyntaxTree"
 
 
 -- shows terminals from all leaves separated by spaces
@@ -102,16 +103,18 @@ flattenTree (Branch _ _ children) = (concat . intersperse " " . map flattenTree)
 
 
 -- pretty prints a syntax tree
-printSyntaxTree :: Int -> SyntaxTree -> String
-printSyntaxTree ident tree = let header = printSyntaxTreeHeader tree in
-                             case tree of                                
-                               (Leaf value)             -> "- " ++ header
-                               (Branch term t children) ->
-                                   "- " ++ header ++ "\n" ++
-                                   (concat . map (identString ++)) subtrees
-                                 where
-                                   identString = replicate ident '\t'
-                                   subtrees = (intersperse "\n" . map (printSyntaxTree (ident + 1))) children
+printSyntaxTree :: Int -> Int -> SyntaxTree -> String
+printSyntaxTree ident depth tree
+    | depth == 0     = "- (...)"
+    | otherwise      = let header = printSyntaxTreeHeader tree in
+                       case tree of                                
+                         (Leaf value)             -> "- " ++ header
+                         (Branch term t children) ->
+                             "- " ++ header ++ "\n" ++
+                                 (concat . map (identString ++)) subtrees
+                             where
+                               identString = replicate ident '\t'
+                               subtrees = (intersperse "\n" . map (printSyntaxTree (ident + 1) (depth - 1))) children
                                 
 
 -- prints the header of a syntax tree, without any leading or trailing whitespace characters

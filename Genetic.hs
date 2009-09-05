@@ -11,6 +11,7 @@ module Genetic
     , EvolutionReporter
     , EvaluatedSyntaxTree (..)
     , GenerationMerger
+    , StopCondition
     , bestMember
     , averageFitness
     ) where
@@ -27,6 +28,8 @@ import Debug.Trace (trace)
 
 
 type Population = [SyntaxTree]
+
+type StopCondition = [EvaluatedSyntaxTree] -> Bool
 
 
 
@@ -52,6 +55,7 @@ data EvolverState = EvolverState { choices             :: [Int]
                                  , evaluator           :: Evaluator
                                  , populationSize      :: Int
                                  , merger              :: GenerationMerger
+                                 , stopCondition       :: StopCondition
                                  }
 
 instance Show EvolverState where
@@ -285,6 +289,7 @@ type GenerationMerger = [EvaluatedSyntaxTree] -> [EvaluatedSyntaxTree] -> [Evalu
 evolve :: EvolverState -> Int -> EvolutionReporter -> [EvaluatedSyntaxTree] -> IO ([EvaluatedSyntaxTree])
 evolve initState epochs reporter population
     | epochs == 0    = return population
+    | (stopCondition initState) population = return population
     | otherwise      = do let normalized                      = normalizeFitnesses population
                               (evolvedPopulation, finalState) = evolvePopulation initState (populationSize initState) normalized
                           evaluatedEvolvedPopulation <- evaluate finalState evolvedPopulation
@@ -335,6 +340,7 @@ evoState = EvolverState { choices             = randoms (mkStdGen 42)           
                                                           }
                         , populationSize      = 100
                         , merger              = (\old new -> new)
+                        , stopCondition       = (\_ -> False)
                         }
 
 
