@@ -167,7 +167,7 @@ expansions = parseGrammar $ unlines ["<Num> <BinOp> <Num> :: Num"
                                     , "x :: Num"]
 
 testedFunction :: Double -> Double
-testedFunction = \x -> x + (sin x)
+testedFunction = \x -> tan (tan (cos (tan (cos (tan (cos (cos x)))))))
 
 
 bestSelector :: GenerationMerger
@@ -189,7 +189,7 @@ evoState = EvolverState { choices             = randoms (mkStdGen 42)           
                                                        in
                                                          if isNaN error
                                                          then return 0
-                                                         else return $ 1.0 / (0.001 + error)
+                                                         else return $ 1.0 / (0.001 + error + 0.01 * fromIntegral (length . flattenTree $ tree))
                                                   )
                                       }
                         , populationSize      = 100
