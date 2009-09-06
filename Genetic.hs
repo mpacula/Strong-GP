@@ -56,6 +56,7 @@ data EvolverState = EvolverState { choices             :: [Int]
                                  , populationSize      :: Int
                                  , merger              :: GenerationMerger
                                  , stopCondition       :: StopCondition
+                                 , generationNumber    :: Int
                                  }
 
 instance Show EvolverState where
@@ -73,9 +74,15 @@ mergeStates :: EvolverState -> GeneratorState -> EvolverState
 mergeStates evoState genState = evoState { choices = stateChoices genState }
 
 
+-- advances all lists of random numbers by 1 element
 advance :: EvolverState -> EvolverState
 advance state = state { choices = (tail . choices) state, probabilities = (tail . probabilities) state }
                
+
+-- increments population number
+incGenerationNumber :: EvolverState -> EvolverState
+incGenerationNumber state = state { generationNumber = (generationNumber state) + 1  }
+
 
 -- Expands the given term N times, generating N syntax trees
 generatePopulation :: EvolverState -> Term -> Possibly (Population, EvolverState)
@@ -255,7 +262,7 @@ averageFitness trees
 
 
 -- Function of this type gets syntax trees at each epoch right after evaluation
-type EvolutionReporter = [EvaluatedSyntaxTree] -> IO ()
+type EvolutionReporter = Int -> [EvaluatedSyntaxTree] -> IO ()
 
 
 -- Evolves a new syntax tree from a population
@@ -293,8 +300,10 @@ evolve initState epochs reporter population
     | otherwise      = do let normalized                      = normalizeFitnesses population
                               (evolvedPopulation, finalState) = evolvePopulation initState (populationSize initState) normalized
                           evaluatedEvolvedPopulation <- evaluate finalState evolvedPopulation
-                          reporter population
-                          evolve finalState (epochs - 1) reporter ((merger finalState) population evaluatedEvolvedPopulation)
+                          reporter (generationNumber finalState) population
+                          evolve (incGenerationNumber finalState)
+                                 (epochs - 1) reporter
+                                 ((merger finalState) population evaluatedEvolvedPopulation)
 
 
 -- generates a new population and evolves it for a number of epochs
@@ -314,7 +323,7 @@ startEvolving initState startTerm epochs reporter = do evaluated <- evaluate ini
 -}
 
 defaultReporter :: EvolutionReporter
-defaultReporter trees = putStrLn "Evolving..."
+defaultReporter generation trees = putStrLn $ show generation ++ ": Evolving..."
 
 expansions = parseGrammar $ unlines ["<Num> <BinOp> <Num> :: Num"
                                     , "+ :: BinOp"
@@ -341,6 +350,7 @@ evoState = EvolverState { choices             = randoms (mkStdGen 42)           
                         , populationSize      = 100
                         , merger              = (\old new -> new)
                         , stopCondition       = (\_ -> False)
+                        , generationNumber    = 1
                         }
 
 

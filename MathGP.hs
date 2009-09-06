@@ -85,7 +85,7 @@ evalFunc cs = case cs of
                  "+" -> BinaryFunc $ liftBinFunc (+)
                  "-" -> BinaryFunc $ liftBinFunc (-)
                  "*" -> BinaryFunc $ liftBinFunc (*)
-                 "/" -> BinaryFunc $ liftBinFunc (\x y -> if y == 0 then 1000 else x / y)
+                 "/" -> BinaryFunc $ liftBinFunc (\x y -> x / y)
                  "^" -> BinaryFunc $ liftBinFunc (\x y -> x ^^ (floor y))
                  "fact" -> UnaryFunc $ liftUnaryFunc (fromIntegral . fact . floor)
                  "sin" -> UnaryFunc $ liftUnaryFunc sin
@@ -149,11 +149,11 @@ expansions = parseGrammar $ unlines ["<Num> <BinOp> <Num> :: Num"
                                     , "* :: BinOp"
                                     , "/ :: BinOp"
                                     , "^ :: BinOp"
---                                    , "<Func> <Num> :: Num"
+                                    , "<Func> <Num> :: Num"
 --                                    , "fact :: Func"
---                                    , "sin :: Func"
---                                    , "cos :: Func"
---                                    , "tan :: Func"
+                                    , "sin :: Func"
+                                    , "cos :: Func"
+                                    , "tan :: Func"
                                     , "0 :: Num"
                                     , "1 :: Num"
                                     , "2 :: Num"
@@ -167,7 +167,7 @@ expansions = parseGrammar $ unlines ["<Num> <BinOp> <Num> :: Num"
                                     , "x :: Num"]
 
 testedFunction :: Double -> Double
-testedFunction = (\x -> sin x)
+testedFunction = \x -> x + (sin x)
 
 
 bestSelector :: GenerationMerger
@@ -194,7 +194,8 @@ evoState = EvolverState { choices             = randoms (mkStdGen 42)           
                                       }
                         , populationSize      = 100
                         , merger              = bestSelector
-                        , stopCondition       = \trees -> (fitness . bestMember $ trees) >= 1000.0
+                        , stopCondition       = \trees -> (fitness . bestMember $ trees) >= 600.0
+                        , generationNumber    = 1
                         }
 
 defaultState = bindVariable "x" (NumberLiteral 3.14) initState
@@ -202,7 +203,8 @@ defaultState = bindVariable "x" (NumberLiteral 3.14) initState
 startTerm = (NonterminalTerm (PrimitiveType "Num"))
 
 evoReporter :: EvolutionReporter
-evoReporter trees = putStrLn $ "Mean fitness: " ++ (show . averageFitness) trees ++ ". Best: " ++ (show . fitness . bestMember) trees
+evoReporter gen trees = putStrLn $ show gen ++ ": Mean fitness: "
+                        ++ (show . averageFitness) trees ++ ". Best: " ++ (show . fitness . bestMember) trees
 
 evalBest :: [EvaluatedSyntaxTree] -> Double -> Double
 evalBest population x = (((flip evalAsFunc) x) . tree) $ bestMember population
