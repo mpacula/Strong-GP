@@ -17,7 +17,7 @@ module Genetic
     ) where
 
 
-import Generator (Term (..), SyntaxTree (..), Expansion, GeneratorState (..), startState, expand, expandTerms)
+import Generator (Term (..), SyntaxTree (..), Expansion, GeneratorState (..), startState, expand, expandFreeTerms)
 import Possibly (Possibly (..), possibly)
 import Types (Type (..), isTypeCompatible)
 import GrammarParser (parseGrammar)
@@ -87,7 +87,7 @@ incGenerationNumber state = state { generationNumber = (generationNumber state) 
 -- Expands the given term N times, generating N syntax trees
 generatePopulation :: EvolverState -> Term -> Possibly (Population, EvolverState)
 generatePopulation state startTerm = do
-  (trees, finalGeneratorState) <- expandTerms (mkGeneratorState state) $ replicate (populationSize state) startTerm
+  (trees, finalGeneratorState) <- expandFreeTerms (mkGeneratorState state) $ replicate (populationSize state) startTerm
   return (trees, mergeStates state finalGeneratorState)
 
 
@@ -267,10 +267,10 @@ type EvolutionReporter = Int -> [EvaluatedSyntaxTree] -> IO ()
 
 -- Evolves a new syntax tree from a population
 evolveTree :: EvolverState -> [EvaluatedSyntaxTree] -> (SyntaxTree, EvolverState)
-evolveTree initState trees = let parent1 = choose (choices initState) trees
-                                 parent2 = choose ((choices . advance) initState) trees
-                                 nextState = (advance . advance) initState
-                                 (offspring, nextState') = crossover nextState (tree parent1) (tree parent2)
+evolveTree initState trees = let parent1                        = choose (choices initState) trees
+                                 parent2                        = choose ((choices . advance) initState) trees
+                                 nextState                      = (advance . advance) initState
+                                 (offspring, nextState')        = crossover nextState (tree parent1) (tree parent2)
                                  (mutatedOffspring, finalState) = mutate nextState' offspring                               
                              in
                                (mutatedOffspring, finalState)

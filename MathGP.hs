@@ -12,6 +12,9 @@ import Data.List (sort)
 import Debug.Trace (trace)
 import Data.Map (Map (..), fromList, (!), insert, member)
 import Utils (fact)
+import Graphics.Plot (plot)
+import Data.Packed.Vector (Vector)
+import qualified Data.Packed.Vector as V
 import qualified Data.Char as Ch
 
 -- represents all valid values within the language
@@ -167,15 +170,15 @@ expansions = parseGrammar $ unlines ["<Num> <BinOp> <Num> :: Num"
                                     , "x :: Num"]
 
 testedFunction :: Double -> Double
-testedFunction = \x -> tan (tan (cos (tan (cos (tan (cos (cos x)))))))
+testedFunction = \x -> sin (x) + 0.1 * cos (15 * x)
 
 
 bestSelector :: GenerationMerger
-bestSelector old new = select result ++ select new
+bestSelector old new = select 0.2 best ++ select 0.8 new
                        where
-                         result = (reverse . sort) (old ++ new)
+                         best = (reverse . sort) (old ++ new)
                          size = length new
-                         select = take (floor ((fromIntegral size) / 2))
+                         select x = take (floor ((fromIntegral size) * x))
 
 
 evoState = EvolverState { choices             = randoms (mkStdGen 42)             :: [Int]
@@ -185,11 +188,11 @@ evoState = EvolverState { choices             = randoms (mkStdGen 42)           
                         , mutationProbability = 0.5
                         , evaluator           =
                             Evaluator { runEval = (\tree ->
-                                                       let error = regressionError testedFunction (-1, 1) 100 tree
+                                                       let error = regressionError testedFunction (0, pi) 100 tree
                                                        in
                                                          if isNaN error
                                                          then return 0
-                                                         else return $ 1.0 / (0.001 + error + 0.01 * fromIntegral (length . flattenTree $ tree))
+                                                         else return $ 1.0 / (0.001 + error + 0.00 * fromIntegral (length . flattenTree $ tree))
                                                   )
                                       }
                         , populationSize      = 100
@@ -203,8 +206,19 @@ defaultState = bindVariable "x" (NumberLiteral 3.14) initState
 startTerm = (NonterminalTerm (PrimitiveType "Num"))
 
 evoReporter :: EvolutionReporter
-evoReporter gen trees = putStrLn $ show gen ++ ": Mean fitness: "
-                        ++ (show . averageFitness) trees ++ ". Best: " ++ (show . fitness . bestMember) trees
+evoReporter gen trees = do putStrLn $ show gen ++ ": Mean fitness: "
+                                        ++ (show . averageFitness) trees
+                                        ++ ". Best: "
+                                        ++ (show . fitness . bestMember) trees
+                           if ((gen - 1) `mod` 100 == 0)
+                              then plot [liftToVector testedFunction, liftToVector (evalBest trees)] (0,pi) 100
+                              else putStr ""
 
 evalBest :: [EvaluatedSyntaxTree] -> Double -> Double
 evalBest population x = (((flip evalAsFunc) x) . tree) $ bestMember population
+
+
+liftToVector :: (Double -> Double) -> Vector Double -> Vector Double
+liftToVector f pts = V.fromList resultPts
+                     where
+                       resultPts = map f (V.toList pts)

@@ -12,7 +12,8 @@ module Generator
     , SyntaxTree (..)
     , GeneratorState (stateChoices)
     , hasNonterminals
-    , expandTerms
+    , expandDependentTerms
+    , expandFreeTerms
     , expand
     , startState
     , flattenTree
@@ -250,11 +251,21 @@ chooseExpansion state t = if null exs
 
 
 -- expands a list of terms, modifying the state accordingly
-expandTerms :: GeneratorState -> [Term] -> Possibly ([SyntaxTree], GeneratorState)
-expandTerms state [] = Good ([], state)
-expandTerms state (t:ts) = expand state t >>=
-                           (\(tree, nextState) -> expandTerms nextState ts >>=
-                            (\(trees, finalState) -> Good $ (tree:trees, finalState)))
+expandDependentTerms :: GeneratorState -> [Term] -> Possibly ([SyntaxTree], GeneratorState)
+expandDependentTerms initState []     = Good ([], initState)
+expandDependentTerms initState (t:ts) = do (tree, nextState)   <- expand initState t
+                                           (trees, finalState) <- expandDependentTerms nextState ts
+                                           return (tree:trees, finalState)
+
+
+-- expands terms that are independent of each other, i.e. variable instantiations due to expansion
+-- of one term should not affect the other etc. The initial state for each expansion doesn't change
+-- except for the list of choices, which is advanced for all expansions.
+expandFreeTerms :: GeneratorState -> [Term] -> Possibly ([SyntaxTree], GeneratorState)
+expandFreeTerms initState []     = Good ([], initState)
+expandFreeTerms initState (t:ts) = do (tree, nextState)   <- expand initState t
+                                      (trees, finalState) <- expandFreeTerms (copyChoices nextState initState) ts
+                                      return (tree:trees, copyChoices finalState initState)
 
 
 -- given a required type for an expansion, substitutes concrete values for type variables in that expansion
@@ -306,7 +317,7 @@ expand initState term@(NonterminalTerm requiredType)
            | otherwise =
                do
                  (expansion, state)             <- chooseExpansion initState (instantiateType initState requiredType)
-                 (children, childrenFinalState) <- expandTerms (childrenState state) (expansionTerms expansion)
+                 (children, childrenFinalState) <- expandDependentTerms (childrenState state) (expansionTerms expansion)
                                                    
                  let finalExpansionType = instantiateType childrenFinalState (expansionType expansion)
                                           

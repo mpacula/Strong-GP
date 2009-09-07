@@ -3,12 +3,14 @@
   to values.
 -}
 
+
 module SymbolTable
     (
     ) where
 
 
-import Types (Type)
+import Types (Type (..), isTypeCompatible)
+import Data.List (intersperse)
 import Data.Map (Map, fromList, member, insert, (!), assocs, empty)
 
 
@@ -25,29 +27,27 @@ data TableValue = TableValue { valueType :: Type
 -- InnerTable: table that's not a root within the hierarchy
 -- RootTable:  top level table with no bindings and no parent
 data SymbolTable = InnerTable { bindings         :: Map Name TableValue
-                              , reverseBindings  :: Map TableValue [Name]
                               , parent           :: SymbolTable
                               }
                  | RootTable
 
 
 instance Show SymbolTable where
-    show RootTable                = "[Root]"
-    show table@(InnerTable _ _ _) = parentString ++ unlines ["", "", "^", "|", "", "[", myString, "]"]
-                                    where showBinding (key, value) = show key ++ " -> " ++ (show . valueType) value ++ "\n"
-                                          parentString = show $ parent table
-                                          myString     = concat . (map showBinding) $ (assocs . bindings) table
+    show RootTable              = "[Root]\n"
+    show table@(InnerTable _ _) = parentString ++ unlines ["", "(^ parent)", "", "[", myString, "]"]
+        where showBinding (key, value) = show key ++ " -> " ++ (show . valueType) value
+              parentString             = show $ parent table
+              myString                 = concat . intersperse "\n" . (map showBinding) $ (assocs . bindings) table
 
 
 -- creates a new clean SymbolTable that's a child of the given one
 mkChild :: SymbolTable -> SymbolTable
 mkChild RootTable = InnerTable { parent = RootTable
                                , bindings = empty
-                               , reverseBindings = empty
                                }
+
 mkChild table = table { parent = table
                       , bindings = empty
-                      , reverseBindings = empty
                       }
 
 -- convenience method. Adds a new element to the list a key maps to,
@@ -64,7 +64,6 @@ insertIntoList key val map = insert key (val:current) map
 -- binds a name to a value in a symbol table
 bind :: Name -> Type -> SymbolTable -> SymbolTable
 bind name t table = table { bindings = insert name value $ bindings table
-                          , reverseBindings = insertIntoList value name $ reverseBindings table
                           }
     where
       value = (TableValue t)
@@ -80,16 +79,39 @@ lookupBinding name table
 
 -- checks whether a symbol table has a binding with the given name
 hasBinding :: Name -> SymbolTable -> Bool
-hasBinding name = (member name) . bindings
+hasBinding name RootTable = False
+hasBinding name table = or [ (member name) . bindings $ table
+                           , hasBinding name . parent $ table
+                           ]
 
 
--- checks whether the given value is bound to at least one name in a symbol table
-hasValue :: Type -> SymbolTable -> Bool
-hasValue t = (member (TableValue t)) . reverseBindings
+-- Gets all names that bind a value type-compatible with the given type.
+-- Definitions lower in the hierarchy shadow those higher up.
+getCompatibleNames :: Type -> SymbolTable -> [Name]
+getCompatibleNames requiredType table = getCompatibleNames' [] table
+    where
+      getCompatibleNames' :: [Name] -> SymbolTable -> [Name]
+      getCompatibleNames' _          RootTable = []
+      getCompatibleNames' shadowList table     =
+          compatibleNames ++ getCompatibleNames' (shadowList ++ allNames) (parent table)
+              where
+                allAssocs        = assocs . bindings $ table
+                visibleAssocs    = filter ((`notElem` shadowList) . fst) allAssocs
+                compatibleAssocs = filter ((`isTypeCompatible` requiredType) . valueType . snd) visibleAssocs
+                allNames         = map fst allAssocs
+                compatibleNames  = map fst compatibleAssocs
 
 
--- gets all names the given value is bound to in a symbol table
-getNames :: Type -> SymbolTable -> [Name]
-getNames t table = if hasValue t table
-                   then (reverseBindings table) ! (TableValue t)
-                   else []
+{-
+  DEBUG DEFINITIONS
+-}
+
+
+table1 = mkChild RootTable
+table2 = bind "x" (PrimitiveType "Int") table1
+table3 = bind "y" (PrimitiveType "String") table2
+
+table4 = mkChild table3
+table5 = bind "z" (PrimitiveType "Func") table4
+
+table = bind "x2" (PolymorphicType "List" [TypeVariable "Int"]) table5
