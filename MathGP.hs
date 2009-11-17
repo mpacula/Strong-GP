@@ -89,7 +89,11 @@ evalFunc cs = case cs of
                  "-" -> BinaryFunc $ liftBinFunc (-)
                  "*" -> BinaryFunc $ liftBinFunc (*)
                  "/" -> BinaryFunc $ liftBinFunc (\x y -> x / y)
-                 "^" -> BinaryFunc $ liftBinFunc (\x y -> x ^^ (floor y))
+                 "^" -> BinaryFunc $ liftBinFunc (\x y -> x ** y)
+                 "append" -> BinaryFunc $ liftBinFunc (\x y -> if y < 10 && y >= 0
+                                                               then read (show (floor x) ++ show (floor y))
+                                                               else x
+                                                      )
                  "fact" -> UnaryFunc $ liftUnaryFunc (fromIntegral . fact . floor)
                  "sin" -> UnaryFunc $ liftUnaryFunc sin
                  "cos" -> UnaryFunc $ liftUnaryFunc cos
@@ -139,11 +143,13 @@ evalAsFunc tree arg = let result = eval (bindVariable "x" (NumberLiteral arg) in
 -- computes total | square error between a function prototype and a syntax tree
 -- Minimum error: 0, corresponds to perfect match
 regressionError :: (Double -> Double) -> (Double, Double) -> Int -> SyntaxTree -> Double
-regressionError f (rmin, rmax) samples tree = foldr (+) 0 errors
+regressionError f (rmin, rmax) samples tree = (foldr (+) 0 errors) + (dev1 - dev2)^2
                                               where
                                                 step = (rmax - rmin) / (fromIntegral samples)
                                                 samplingPts = [rmin, rmin + step .. rmax]
                                                 errors = map (\pt -> ((f pt) - (evalAsFunc tree pt)) ^ 2) samplingPts
+                                                dev1 = mean $ map (derivative f step) samplingPts
+                                                dev2 = mean $ map (derivative (evalAsFunc tree) step) samplingPts
 
 
 expansions = parseGrammar $ unlines ["<Num> <BinOp> <Num> :: Num"
@@ -152,8 +158,8 @@ expansions = parseGrammar $ unlines ["<Num> <BinOp> <Num> :: Num"
                                     , "* :: BinOp"
                                     , "/ :: BinOp"
                                     , "^ :: BinOp"
+--                                    , "append :: BinOp"
                                     , "<Func> <Num> :: Num"
---                                    , "fact :: Func"
                                     , "sin :: Func"
                                     , "cos :: Func"
                                     , "tan :: Func"
@@ -169,8 +175,24 @@ expansions = parseGrammar $ unlines ["<Num> <BinOp> <Num> :: Num"
                                     , "9 :: Num"
                                     , "x :: Num"]
 
+
+derivative :: (Double -> Double) -> Double -> Double -> Double
+derivative f step x = (f (x + step) - f x) / step
+
+mean :: [Double] -> Double
+mean xs = (foldr (+) 0 xs) / fromIntegral (length xs)
+
+stdDev :: [Double] -> Double
+stdDev xs = sqrt (foldr (\x sofar -> sofar + ((x - m) ^ 2) / n) 0.0 xs)
+            where
+              m = mean xs
+              n = fromIntegral $ length xs
+
+--sumDerivative :: (Double -> Double) 
+
+
 testedFunction :: Double -> Double
-testedFunction = \x -> sin (x) + 0.1 * cos (15 * x)
+testedFunction = \x -> x^2 + (3 * sin (4 * x))
 
 
 bestSelector :: GenerationMerger
@@ -181,18 +203,18 @@ bestSelector old new = select 0.2 best ++ select 0.8 new
                          select x = take (floor ((fromIntegral size) * x))
 
 
-evoState = EvolverState { choices             = randoms (mkStdGen 42)             :: [Int]
-                        , probabilities       = randomRs (0.0, 1.0) (mkStdGen 43) :: [Double]
+evoState = EvolverState { choices             = randoms (mkStdGen 52)             :: [Int]
+                        , probabilities       = randomRs (0.0, 1.0) (mkStdGen 73) :: [Double]
                         , grammar             = possibly id (\_ -> []) expansions
                         , maxTreeDepth        = 100
                         , mutationProbability = 0.5
                         , evaluator           =
                             Evaluator { runEval = (\tree ->
-                                                       let error = regressionError testedFunction (0, pi) 100 tree
+                                                       let error = regressionError testedFunction (-pi, pi) 10000 tree
                                                        in
                                                          if isNaN error
                                                          then return 0
-                                                         else return $ 1.0 / (0.001 + error + 0.00 * fromIntegral (length . flattenTree $ tree))
+                                                         else return $ 1.0 / (0.001 + error)
                                                   )
                                       }
                         , populationSize      = 100
@@ -201,17 +223,18 @@ evoState = EvolverState { choices             = randoms (mkStdGen 42)           
                         , generationNumber    = 1
                         }
 
-defaultState = bindVariable "x" (NumberLiteral 3.14) initState
-
 startTerm = (NonterminalTerm (PrimitiveType "Num"))
 
 evoReporter :: EvolutionReporter
-evoReporter gen trees = do putStrLn $ show gen ++ ": Mean fitness: "
+evoReporter gen trees = do putStrLn $ show gen
+                                        ++ ": Mean fitness: "
                                         ++ (show . averageFitness) trees
                                         ++ ". Best: "
                                         ++ (show . fitness . bestMember) trees
-                           if ((gen - 1) `mod` 100 == 0)
-                              then plot [liftToVector testedFunction, liftToVector (evalBest trees)] (0,pi) 100
+                                        ++ "\n"
+                                        ++ flattenTree ((tree . bestMember) trees)
+                           if ((gen - 1) `mod` 10 == 0)
+                              then plot [liftToVector testedFunction, liftToVector (evalBest trees)] (-pi,pi) 1000
                               else putStr ""
 
 evalBest :: [EvaluatedSyntaxTree] -> Double -> Double

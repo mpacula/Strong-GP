@@ -1,9 +1,9 @@
  {--
-  Defines datatypes for expressing metalanguage rules
+  Syntax tree datatypes and generation algorithms.
 -}
 
 
-module Generator
+module GP.Generator
     (
       isNonterminal
     , isTerminal
@@ -11,6 +11,7 @@ module Generator
     , Expansion (..)
     , SyntaxTree (..)
     , GeneratorState (stateChoices)
+    , UserGenerator (..)
     , hasNonterminals
     , expandDependentTerms
     , expandFreeTerms
@@ -24,9 +25,9 @@ import Debug.Trace (trace)
 import System.Random (mkStdGen, randoms, getStdGen)
 import Data.List (intersperse, find)
 import Data.Map (Map, fromList, (!), member, insert)
-import Types (Type (..), isPrimitive, isPolymorphic, isTypeVariable, isTypeCompatible)
-import Possibly (Possibly (Good, Error))
-import Utils (choose)
+import GP.Types (Type (..), isPrimitive, isPolymorphic, isTypeVariable, isTypeCompatible)
+import GP.Possibly (Possibly (Good, Error))
+import GP.Utils (choose)
 
 
 
@@ -36,19 +37,24 @@ import Utils (choose)
 
 
 
-data Term = NonterminalTerm { termRequiredType :: Type } 
+data Term = NonterminalTerm { termRequiredType :: Type, locked :: Bool, crossoverHookName :: String } 
           | TerminalTerm    { termName :: String }
+          | GeneratedTerm   { termName :: String, generatorName :: String }
             deriving (Eq)
 
 
 instance Show Term where
-    show (NonterminalTerm requiredType) = show requiredType
+    show (NonterminalTerm requiredType locked ch) = show requiredType ++ if locked then "*" else ""
+                                                    ++ if (not . null) ch
+                                                       then ", crossover hook: " ++ ch
+                                                       else ""
     show (TerminalTerm name)            = "\"" ++ name ++ "\""
+    show (GeneratedTerm name gen)       = "[\"" ++ name ++ "\" <- " ++ gen ++ "]"
 
 
 isNonterminal,isTerminal :: Term -> Bool
-isNonterminal (NonterminalTerm _) = True
-isNonterminal _                   = False
+isNonterminal (NonterminalTerm _ _ _) = True
+isNonterminal _                       = False
 
 isTerminal = not . isNonterminal
 
@@ -126,7 +132,7 @@ printSyntaxTree ident depth tree
 printSyntaxTreeHeader :: SyntaxTree -> String
 printSyntaxTreeHeader tree = case tree of
                                (Leaf value)         -> "\"" ++ value ++ "\""
-                               (Branch term t _)      -> show t ++ ", from " ++ show (termRequiredType term)
+                               (Branch term t _)    -> show t ++ ", from " ++ show (termRequiredType term)
 
 
 
@@ -141,8 +147,16 @@ showTypeMismatch :: Type -> Type -> String
 showTypeMismatch expected actual = "Type mismatch. Expected: " ++ show expected ++ ". Actual: " ++ show actual
 
 
+-- allows the user to supply custom code to generate non-terminals
+data UserGenerator a = UserGenerator
+    {
+      -- generates a new term given the custom state and current name of the terminal
+      generate :: a -> String -> (a, String)
+    }
+
+
 -- holds state necessary for syntax tree generation
-data GeneratorState = GeneratorState
+data GeneratorState a = GeneratorState
     {
       stateExpansions   :: [Expansion]      -- all expansions available to the generator
     , stateVariableMap  :: Map Type Type    -- maps instantiated type variables to concrete types
@@ -150,6 +164,7 @@ data GeneratorState = GeneratorState
     , stateCount        :: Int              -- number of times state has been changed, used for debugging
     , stateDepth        :: Int              -- current depth in the tree
     , stateMaxDepth     :: Int              -- maximum tree depth
+    , userGenerators    :: Map String (UserGenerator a, a)
     }
 
 
@@ -161,45 +176,46 @@ data GeneratorState = GeneratorState
 
 
 -- creates an initial state that can be used to generate syntax trees
-startState :: [Expansion] -> [Int] -> Int -> GeneratorState
-startState expansions choices maxDepth = GeneratorState {
+startState :: [Expansion] -> [Int] -> Int -> [(String, UserGenerator a, a)] -> GeneratorState a
+startState expansions choices maxDepth userGenerators = GeneratorState {
                                            stateExpansions = expansions
                                          , stateVariableMap = fromList []
                                          , stateChoices = choices
                                          , stateCount = 0
                                          , stateDepth = 0
                                          , stateMaxDepth = maxDepth
+                                         , userGenerators = fromList $ map (\(a, b, c) -> (a, (b, c))) userGenerators
                                          }
 
 -- removes the head choice from a GeneratorState
-advanceChoices :: GeneratorState -> GeneratorState
+advanceChoices :: GeneratorState a -> GeneratorState a
 advanceChoices state = state { stateChoices = tail $ stateChoices state, stateCount = (+1) $ stateCount state }
 
 
 -- clears type variable map in a generator state
-clearInstances :: GeneratorState -> GeneratorState
+clearInstances :: GeneratorState a -> GeneratorState a
 clearInstances state = state { stateVariableMap = fromList [] }
 
 
--- increased the depth in a generator state
-deepen :: GeneratorState -> GeneratorState
+-- increases the depth in a generator state
+deepen :: GeneratorState a -> GeneratorState a
 deepen state = state { stateDepth = 1 + stateDepth state }
 
 
 -- copies choices from one state to another
-copyChoices :: GeneratorState -> GeneratorState -> GeneratorState
-copyChoices src dest = dest { stateChoices = stateChoices src, stateCount = stateCount src  }
+copyChoices :: GeneratorState a -> GeneratorState a -> GeneratorState a
+copyChoices src dest = dest { stateChoices = stateChoices src, stateCount = stateCount src, userGenerators = userGenerators src }
 
 
 -- given a state at one level, creates state that can be used for generating children one
 -- level below
-childrenState :: GeneratorState -> GeneratorState
+childrenState :: GeneratorState a -> GeneratorState a
 childrenState = deepen . clearInstances
 
 
 -- given an original type and a new one, creates type variable bindings in the generator state
 -- that would transform the first into the latter 
-instantiateState :: Type -> Type -> GeneratorState -> GeneratorState
+instantiateState :: Type -> Type -> GeneratorState a -> GeneratorState a
 instantiateState originalType newType originalState =
     case originalType of
       (PrimitiveType _)      -> originalState
@@ -213,7 +229,7 @@ instantiateState originalType newType originalState =
                                  -- Creates type variable bindings in generator state
                                  -- before: type before instantiation
                                  -- after:  type after instantiation
-                                 instantiator :: (Type, Type) -> GeneratorState -> GeneratorState
+                                 instantiator :: (Type, Type) -> GeneratorState a -> GeneratorState a
                                  instantiator = (\(before, after) state ->
                                                      let varMap = (stateVariableMap state)
                                                      in
@@ -224,7 +240,7 @@ instantiateState originalType newType originalState =
                                                 )
 
 -- subtitutes type variables in a type using variable map from a generator state
-instantiateType :: GeneratorState -> Type -> Type
+instantiateType :: GeneratorState a -> Type -> Type
 instantiateType state t = case t of
                             t@(PrimitiveType _)         -> t
                             t@(TypeVariable _ )         -> if member t (stateVariableMap state)
@@ -239,7 +255,7 @@ compatibleExpansions t = filter $ (`isTypeCompatible` t) . expansionType
 
 
 -- chooses a type-compatible expansion for the given type, if any
-chooseExpansion :: GeneratorState -> Type -> Possibly (Expansion, GeneratorState)
+chooseExpansion :: GeneratorState a -> Type -> Possibly (Expansion, GeneratorState a)
 chooseExpansion state t = if null exs
                           then Error $ "Could not find a compatible expansion for type " ++ show t ++
                                    " at depth " ++ show (stateDepth state)
@@ -251,7 +267,7 @@ chooseExpansion state t = if null exs
 
 
 -- expands a list of terms, modifying the state accordingly
-expandDependentTerms :: GeneratorState -> [Term] -> Possibly ([SyntaxTree], GeneratorState)
+expandDependentTerms :: GeneratorState a -> [Term] -> Possibly ([SyntaxTree], GeneratorState a)
 expandDependentTerms initState []     = Good ([], initState)
 expandDependentTerms initState (t:ts) = do (tree, nextState)   <- expand initState t
                                            (trees, finalState) <- expandDependentTerms nextState ts
@@ -261,7 +277,7 @@ expandDependentTerms initState (t:ts) = do (tree, nextState)   <- expand initSta
 -- expands terms that are independent of each other, i.e. variable instantiations due to expansion
 -- of one term should not affect the other etc. The initial state for each expansion doesn't change
 -- except for the list of choices, which is advanced for all expansions.
-expandFreeTerms :: GeneratorState -> [Term] -> Possibly ([SyntaxTree], GeneratorState)
+expandFreeTerms :: GeneratorState a -> [Term] -> Possibly ([SyntaxTree], GeneratorState a)
 expandFreeTerms initState []     = Good ([], initState)
 expandFreeTerms initState (t:ts) = do (tree, nextState)   <- expand initState t
                                       (trees, finalState) <- expandFreeTerms (copyChoices nextState initState) ts
@@ -270,15 +286,16 @@ expandFreeTerms initState (t:ts) = do (tree, nextState)   <- expand initState t
 
 -- given a required type for an expansion, substitutes concrete values for type variables in that expansion
 -- If both expansions share type variable names, they will be renamed before substitution
-instantiateExpansion :: GeneratorState -> Type -> Expansion -> Expansion
+instantiateExpansion :: GeneratorState a -> Type -> Expansion -> Expansion
 instantiateExpansion state requiredType ex = Expansion terms $ (instantiateType newState . expansionType) ex
                                              where
                                                newState = instantiateState (expansionType ex) requiredType state
                                                terms = map termMapper (expansionTerms ex)
                                                        
                                                termMapper t@(TerminalTerm _) = t
-                                               termMapper (NonterminalTerm originalType) =
-                                                   NonterminalTerm $ instantiateType newState (makeVariablesDistinct requiredType originalType)
+                                               termMapper t@(GeneratedTerm _ _) = t
+                                               termMapper (NonterminalTerm originalType locked chook) =
+                                                   NonterminalTerm (instantiateType newState (makeVariablesDistinct requiredType originalType)) locked chook
 
 
 -- given 2 types, renames variable types in the second one so that the two have none in common
@@ -310,9 +327,20 @@ uniqueName prototype suffix others = if try `notElem` others
 
 
 -- generates a syntax tree which is type-compatible with the given term
-expand :: GeneratorState -> Term -> Possibly (SyntaxTree, GeneratorState)
+expand :: GeneratorState a -> Term -> Possibly (SyntaxTree, GeneratorState a)
 expand state (TerminalTerm name) = Good (Leaf name, state)
-expand initState term@(NonterminalTerm requiredType)
+
+expand state t@(GeneratedTerm val genName) = if genName `member` (userGenerators state)
+                                             then Good (Leaf generatedVal, updatedGeneratorState)
+                                             else error $ "User generator not available: " ++ genName
+    where
+      (gen, startState) = (userGenerators state) ! genName
+      (endState, generatedVal)   = (generate gen) startState val
+      updatedGeneratorState = state {
+                                userGenerators = insert genName (gen, endState) (userGenerators state)
+                              }
+
+expand initState term@(NonterminalTerm requiredType locked _)
            | stateDepth initState >= stateMaxDepth initState = Error "Maximum depth exceeded"
            | otherwise =
                do
@@ -326,68 +354,3 @@ expand initState term@(NonterminalTerm requiredType)
 
 
 
-{-
-  DEBUG DEFINITIONS
--}
-
-
-
-typeA = (PolymorphicType "List" [(PolymorphicType "Func"
-                                 [(TypeVariable "a"), (PolymorphicType "Func" [TypeVariable "b", TypeVariable "c"])])])
-
-typeB = (PolymorphicType "List" [(PolymorphicType "Func"
-                                 [(PrimitiveType "Number"),
-                                  (PolymorphicType "Func" [PrimitiveType "String",
-                                                           PolymorphicType "List" [PrimitiveType "String"]])])])
-
-typeC = (PolymorphicType "List" [(PolymorphicType "Func"
-                                 [(TypeVariable "a"), (PolymorphicType "Func" [TypeVariable "b", TypeVariable "a"])])])
-
-tNumber = PrimitiveType "Number"
-tString = PrimitiveType "String"
-
-vA = TypeVariable "a"
-vB = TypeVariable "b"
-vC = TypeVariable "c"
-
-tList = PolymorphicType "List" [vA]
-
-expansion1 = (Expansion [(NonterminalTerm tNumber), (TerminalTerm "+"), (NonterminalTerm tNumber)] tNumber)
-expansion2 = (Expansion [(NonterminalTerm tNumber), (TerminalTerm "*"), (NonterminalTerm tNumber)] tNumber)
-
-expansion3 = Expansion [(TerminalTerm "1")] tNumber
-expansion4 = Expansion [(TerminalTerm "2")] tNumber
-
-expansion5 = (Expansion [(NonterminalTerm tString), (TerminalTerm "++"), (NonterminalTerm tString)] tString)
-expansion6 = (Expansion [(NonterminalTerm vA), (TerminalTerm ":"), (NonterminalTerm tList)] tList)
-expansion7 = (Expansion [TerminalTerm "[]"] tList)
-
-expansion8 = (Expansion [TerminalTerm "hello"] tString)
-expansion9 = (Expansion [TerminalTerm "world"] tString)
-
-allExpansions = [expansion1, expansion2, expansion3, expansion4, expansion5, expansion6, expansion7, expansion8, expansion9]
-testState = startState allExpansions (randoms (mkStdGen 12) :: [Int]) 10
-
-mkFunc :: Type -> Type -> Type
-mkFunc arg ret = PolymorphicType "Func" [arg, ret]
-
-lparen = TerminalTerm "("
-rparen = TerminalTerm ")"
-
-sexp1 = Expansion [lparen, (NonterminalTerm (mkFunc vA vB)), (NonterminalTerm vA), rparen] vB
-sexp2 = Expansion [lparen, (TerminalTerm "lambda"), lparen, (TerminalTerm "x"), rparen,
-                             (NonterminalTerm vB), rparen] (mkFunc vA vB)
-sexp3 = Expansion [lparen, TerminalTerm "+", (NonterminalTerm tNumber), (NonterminalTerm tNumber), rparen] tNumber
-sexp4 = Expansion [lparen, TerminalTerm "-", (NonterminalTerm tNumber), (NonterminalTerm tNumber), rparen] tNumber
-sexp5 = Expansion [lparen, TerminalTerm "*", (NonterminalTerm tNumber), (NonterminalTerm tNumber), rparen] tNumber
-sexp6 = Expansion [lparen, TerminalTerm "/", (NonterminalTerm tNumber), (NonterminalTerm tNumber), rparen] tNumber
-
-sexp7 = Expansion [lparen, TerminalTerm "cons", NonterminalTerm vA, NonterminalTerm tList] tList
-
-sexp8 = Expansion [(TerminalTerm "1")] tNumber
-sexp9 = Expansion [(TerminalTerm "2")] tNumber
-sexp10 = Expansion [(TerminalTerm "3")] tNumber
-sexp11 = Expansion [(TerminalTerm "4")] tNumber
-
-sexps = [sexp1, sexp2, sexp3, sexp4, sexp5, sexp6, sexp7, sexp8, sexp9, sexp10, sexp11]
-sexpState = startState sexps (randoms (mkStdGen 1) :: [Int]) 5

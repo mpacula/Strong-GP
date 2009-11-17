@@ -3,13 +3,14 @@
   a discernable bigger abstraction.
 --}
 
-module Utils
+module GP.Utils
     (
      choose
-   , xor
-   , partitionEithers
-   , indexFoldr
-   , fact
+    , xor
+    , partitionEithers
+    , indexFoldr
+    , fact
+    , scaleToInterval
     ) where
 
 
@@ -61,3 +62,11 @@ fact :: Int -> Int
 fact n
      | n <= 0    = 1
      | otherwise = n * fact (n - 1) 
+
+
+
+
+scaleToInterval :: Int -> Int -> Int -> Int
+scaleToInterval min max val = round $ (f min) + (f val) * ((f max) - (f min)) /  (f (maxBound :: Int))
+    where
+      f = fromIntegral

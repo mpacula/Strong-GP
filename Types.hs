@@ -2,7 +2,7 @@
   Types.hs - type operations for the language-description metalanguage
 --}
 
-module Types 
+module GP.Types 
     (
       Type(..)
     , isPrimitive
@@ -13,7 +13,7 @@ module Types
 
 
 import Data.List (intersperse, intersect)
-import AbstractTypeMatching (Matcher, (==>))
+import GP.AbstractTypeMatching (Matcher, (==>))
 
 
 data Type = PrimitiveType  { name :: String }

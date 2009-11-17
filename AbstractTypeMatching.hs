@@ -2,7 +2,7 @@
  Provides simple matching on types without directly inspecting contents 
 --}
 
-module AbstractTypeMatching
+module GP.AbstractTypeMatching
     (
      Matcher
    , (==>)

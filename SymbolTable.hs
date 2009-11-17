@@ -4,7 +4,7 @@
 -}
 
 
-module SymbolTable
+module GP.SymbolTable
     (
     ) where
 

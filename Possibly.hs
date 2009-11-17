@@ -2,7 +2,7 @@
   Simple monad for error handling
 --}
 
-module Possibly
+module GP.Possibly
     (
       Possibly(Good, Error)
     , possibly
