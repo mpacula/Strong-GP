@@ -346,12 +346,13 @@ evolve initState epochs reporter population
                                                 return (initState { userState = finalUserState }, population)
     | otherwise      = do let normalized                  = normalizeFitnesses population
                               (evolvedPopulation, state') = evolvePopulation initState (populationSize initState) normalized
-                          (finalState, evaluatedEvolvedPopulation) <- evaluate state' evolvedPopulation
+                          (state'', reevaluatedOldPopulation) <- evaluate state' $ map tree population
+                          (finalState, evaluatedEvolvedPopulation) <- evaluate state'' evolvedPopulation
                           finalUserState <- reporter (generationNumber finalState) (userState finalState) population
                           
                           evolve (incGenerationNumber finalState { userState = finalUserState })
                                  (epochs - 1) reporter
-                                 ((merger finalState) population evaluatedEvolvedPopulation)
+                                 ((merger finalState) reevaluatedOldPopulation evaluatedEvolvedPopulation)
 
 
 -- generates a new population and evolves it for a number of epochs
