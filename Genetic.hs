@@ -75,7 +75,7 @@ data EvolverState a b c = EvolverState { choices             :: [Int]
                                        , grammar             :: [Expansion]
                                        , maxTreeDepth        :: Int
                                        , mutationProbability :: Double
-                                       , evaluator           :: Evaluator
+                                       , evaluator           :: Evaluator a
                                        , populationSize      :: Int
                                        , merger              :: GenerationMerger
                                        , stopCondition       :: StopCondition
@@ -231,8 +231,8 @@ mutate state tree
 
 -- Evaluates a SyntaxTree and returns a fitness value. Since SyntaxTrees are programs,
 -- evaluation can have arbitrary side effects and is therefore wrapped in the IO monad
-newtype Evaluator = Evaluator {
-         runEval :: SyntaxTree -> IO (Double)
+newtype Evaluator a = Evaluator {
+         runEval :: a -> SyntaxTree -> IO (a, Double)
       }
 
 
@@ -248,17 +248,21 @@ instance Ord EvaluatedSyntaxTree where
 
 
 -- Evaluates fitness of a single tree
-evalTree :: EvolverState a b c -> SyntaxTree -> IO (EvaluatedSyntaxTree)
-evalTree state tree = do fitnessVal <- ((runEval . evaluator) state) tree
-                         return EvaluatedSyntaxTree { fitness = fitnessVal
-                                                    , tree    = tree
-                                                    }
+evalTree :: EvolverState a b c -> SyntaxTree -> IO (EvolverState a b c, EvaluatedSyntaxTree)
+evalTree state tree = do (ustate, fitnessVal) <- ((runEval . evaluator) state) (userState state) tree
+                         return (state {userState = ustate}
+                                , EvaluatedSyntaxTree { fitness = fitnessVal
+                                                      , tree    = tree
+                                                      }
+                                )
 
 
 -- Evaluates fitness of a population
-evaluate :: EvolverState a b c -> Population -> IO [EvaluatedSyntaxTree]
-evaluate state population = do evaluated <- mapM (evalTree state) population
-                               return evaluated
+evaluate :: EvolverState a b c -> Population -> IO (EvolverState a b c, [EvaluatedSyntaxTree])
+evaluate state [] = return (state, [])
+evaluate state (p:ps) = do (nextState, evaluated) <- evalTree state p
+                           (finalState, rest) <- evaluate nextState ps
+                           return (finalState, evaluated : rest)
 
 
 -- Normalizes fitness values of evaluated syntax trees so that all of them add up to 1
@@ -340,9 +344,9 @@ evolve initState epochs reporter population
     | epochs == 0    = return (initState, population)
     | (stopCondition initState) population = do finalUserState <- reporter (generationNumber initState) (userState initState) population
                                                 return (initState { userState = finalUserState }, population)
-    | otherwise      = do let normalized                      = normalizeFitnesses population
-                              (evolvedPopulation, finalState) = evolvePopulation initState (populationSize initState) normalized
-                          evaluatedEvolvedPopulation <- evaluate finalState evolvedPopulation
+    | otherwise      = do let normalized                  = normalizeFitnesses population
+                              (evolvedPopulation, state') = evolvePopulation initState (populationSize initState) normalized
+                          (finalState, evaluatedEvolvedPopulation) <- evaluate state' evolvedPopulation
                           finalUserState <- reporter (generationNumber finalState) (userState finalState) population
                           
                           evolve (incGenerationNumber finalState { userState = finalUserState })
@@ -352,8 +356,8 @@ evolve initState epochs reporter population
 
 -- generates a new population and evolves it for a number of epochs
 startEvolving :: EvolverState a b c -> Term -> Int -> EvolutionReporter a -> IO ([EvaluatedSyntaxTree])
-startEvolving initState startTerm epochs reporter = do evaluated <- evaluate initState initialPopulation
-                                                       (_, finalPopulation) <- evolve nextState epochs reporter evaluated
+startEvolving initState startTerm epochs reporter = do (nextState2, evaluated) <- evaluate nextState initialPopulation
+                                                       (_, finalPopulation) <- evolve nextState2 epochs reporter evaluated
                                                        return finalPopulation
                                                     where
                                                       (initialPopulation, nextState) =
@@ -391,7 +395,7 @@ evoState = EvolverState { choices             = randoms (mkStdGen 42)           
                         , grammar             = possibly id (\_ -> []) expansions
                         , maxTreeDepth        = 100
                         , mutationProbability = 0.1
-                        , evaluator           = Evaluator { runEval = (\t -> return 1)
+                        , evaluator           = Evaluator { runEval = (\s _ -> return (s, 1))
                                                           }
                         , populationSize      = 100
                         , merger              = (\old new -> new)
