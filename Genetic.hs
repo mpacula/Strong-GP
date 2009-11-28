@@ -337,13 +337,16 @@ normalizeFitnesses xs = if totalFitness == 0
 
 -- Normalizes fitness values of evaluated syntax trees and picks an element t from them
 -- with probability (fitness t). All fitnesses have to be normalized.
-pickForReproduction :: [EvaluatedSyntaxTree] -> EvolverState a b c SyntaxTree
+pickForReproduction :: [EvaluatedSyntaxTree] -> EvolverState a b c EvaluatedSyntaxTree
 pickForReproduction trees = do pr <- randDouble
-                               return $ (head . fst) (foldr picker ([], pr) trees)
+                               let result = fst $ foldr picker ([], pr) trees
+                               if null result
+                                  then error "No candidate for reproduction was picked. This is a bug."
+                                  else return $ head result
                                where
                                  picker t x@(picked, r)
-                                     | null picked = if fitness t <= r
-                                                     then ([tree t], r)
+                                     | null picked = if fitness t >= r
+                                                     then ([t], r)
                                                      else ([], r - fitness t)
                                      | otherwise   = x
 
@@ -372,8 +375,8 @@ type EvolutionReporter a = Int -> a -> [EvaluatedSyntaxTree] -> IO (a)
 
 -- Evolves a new syntax tree from a population
 evolveTree :: [EvaluatedSyntaxTree] -> EvolverState a b c EvaluatedSyntaxTree
-evolveTree trees = do parent1          <- randElt trees
-                      parent2          <- randElt trees
+evolveTree trees = do parent1          <- pickForReproduction trees
+                      parent2          <- pickForReproduction trees
                       offspring        <- crossover parent1 parent2
                       mutatedOffspring <- mutate offspring                               
                       return mutatedOffspring
@@ -428,7 +431,7 @@ startEvolving :: Evolver a b c -> Term -> Int -> EvolutionReporter a -> IO ([Eva
 startEvolving initState startTerm epochs reporter = do (evaluated, nextState2) <- evaluate initialEvaluatedPopulation nextState
                                                        newUserState <- reporter (generationNumber nextState2)
                                                                        (userState nextState2)
-                                                                       $ trace "Calling reporter... " evaluated
+                                                                       evaluated
                                                        (_, finalPopulation) <- evolve nextState2 { userState = newUserState, generationNumber = 1 + generationNumber nextState2 } epochs reporter evaluated
                                                        return finalPopulation
                                                     where
