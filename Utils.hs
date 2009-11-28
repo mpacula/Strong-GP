@@ -67,6 +67,9 @@ fact n
 
 
 scaleToInterval :: Int -> Int -> Int -> Int
-scaleToInterval min max val = round $ (f min) + (f val) * ((f max) - (f min)) /  (f (maxBound :: Int))
+scaleToInterval min max val = round $ (f min) + (f val') * ((f max) - (f min)) /  (f (maxBound :: Int))
     where
       f = fromIntegral
+      -- abs will be negative if val = min_int, since min_int = -2^N, whereas max_int = 2^N-1, so
+      -- multiplying min_int by -1 will overflow. This makes sure abs never overflows
+      val' = if val == (minBound :: Int) then abs(val + 1) else abs val

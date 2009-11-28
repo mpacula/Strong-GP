@@ -23,18 +23,17 @@ skipWhitespace = skipMany (space <|> tab)
 
 
 parseTypeVariable :: Parser Type
-parseTypeVariable = do firstChar <- lower
-                       rest <- many letter
-                       return $ TypeVariable (firstChar : rest)
+parseTypeVariable = do tag <- char '$'
+                       name <- many letter
+                       return $ TypeVariable name
 
 
 identifier :: Parser String
 identifier = many1 (letter <|> char '_' <|> digit)
 
 parsePrimitiveType :: Parser Type
-parsePrimitiveType = do firstChar <- upper
-                        rest <- identifier
-                        return $ PrimitiveType (firstChar : rest)
+parsePrimitiveType = do name <- identifier
+                        return $ PrimitiveType name
 
 
 parsePolymorphicType :: Parser Type

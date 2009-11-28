@@ -6,7 +6,7 @@
 module GP.Genetic
     (
       startEvolving
-    , EvolverState (..)
+    , Evolver (..)
     , Evaluator (..)
     , EvolutionReporter
     , EvaluatedSyntaxTree (..)
@@ -18,21 +18,115 @@ module GP.Genetic
     ) where
 
 
-import GP.Generator (Term (..), SyntaxTree (..), Expansion, GeneratorState (..), startState, expand, expandFreeTerms,
-                    UserGenerator)
+import GP.Generator
 import GP.Possibly (Possibly (..), possibly)
 import GP.Types (Type (..), isTypeCompatible)
 import GP.GrammarParser (parseGrammar)
-import GP.Utils (choose, indexFoldr)
+import GP.Utils (indexFoldr)
 import System.Random (mkStdGen, randoms, randomRs)
+import Control.Monad.State
 import Data.Map (Map, fromList, (!), member, insert)
 import Debug.Trace (trace)
 
 
-
-type Population = [SyntaxTree]
-
 type StopCondition = [EvaluatedSyntaxTree] -> Bool
+
+
+
+
+-- allows precise control over crossover
+data CrossoverHook a = CrossoverHook { crossoverHook         :: a -> SyntaxTree -> SyntaxTree -> (a, SyntaxTree)
+                                       
+                                     }
+
+hasHook :: Evolver a b c -> String -> Bool
+hasHook state name = name `member` (crossoverHooks state)
+
+callCrossoverHook :: String -> SyntaxTree -> SyntaxTree -> EvolverState a b c SyntaxTree
+callCrossoverHook hookName tree1 tree2 = do state <- get
+                                            let (hook, hookState) = (crossoverHooks state) ! hookName
+                                                (newHookState, offspring) = (crossoverHook hook) hookState tree1 tree2
+                                            put state {
+                                                      crossoverHooks = insert hookName
+                                                                       (hook, newHookState)
+                                                                       (crossoverHooks state)
+                                                    }
+                                            return offspring
+
+
+
+data Evolver a b c = Evolver { choices             :: [Int]
+                             , probabilities       :: [Double]
+                             , grammar             :: [Expansion]
+                             , maxTreeDepth        :: Int
+                             , mutationProbability :: Double
+                             , evaluator           :: Evaluator a
+                             , populationSize      :: Int
+                             , merger              :: GenerationMerger
+                             , stopCondition       :: StopCondition
+                             , generationNumber    :: Int
+                             , userState           :: a
+                             , userGenerators      :: [(String, UserGenerator b, b)]
+                             , crossoverHooks      :: Map String (CrossoverHook c, c)
+                             }
+
+
+
+type EvolverState a b c d  = State (Evolver a b c) d
+
+
+-- transforms an evolver state into a generator state. No evolver state is modified
+mkGeneratorState :: EvolverState a b c (GeneratorState b)
+mkGeneratorState = do state <- get
+                      return $ startState (grammar state) (choices state) (maxTreeDepth state) (userGenerators state)
+
+
+-- merges an evolver state with a generator state by copying the generator's random numbers
+-- to the evolver's state 
+mergeStates :: GeneratorState b -> EvolverState a b c ()
+mergeStates genState = do evoState <- get
+                          put evoState { choices = stateChoices genState }
+
+
+-- gets a random integer from the evolver's internal state
+randInt :: EvolverState a b c Int
+randInt = do state <- get
+             let r = head $ choices state
+             put state { choices = tail $ choices state }
+             return r
+
+-- gets a random double 0-1 from the evolver's internal state
+randDouble :: EvolverState a b c Double
+randDouble = do state <- get
+                let r = head $ probabilities state
+                put state { probabilities = tail $ probabilities state }
+                return r
+
+-- chooses a random element from a list
+randElt :: [a] -> EvolverState b c d a
+randElt lst = do n <- randInt
+                 let index = n `mod` (length lst)
+                 return $ lst !! index
+
+
+-- increments population number
+incGenerationNumber :: EvolverState a b c ()
+incGenerationNumber = do state <- get
+                         put state { generationNumber = (generationNumber state) + 1  }
+                         return ()
+
+
+-- Expands the given term N times, generating N syntax trees
+generatePopulation :: Term -> EvolverState a b c (Possibly [SyntaxTree])
+generatePopulation startTerm = do genState <- mkGeneratorState
+                                  evoState <- get
+                                  let n = populationSize evoState
+                                      genResult = expandFreeTerms genState $ replicate n startTerm
+                                  case genResult of
+                                       Error msg -> return $ Error ("Could not generate population:\n\t" ++ msg)
+                                       Good (trees, genState') -> do mergeStates genState'
+                                                                     return $ Good trees
+                                                                         
 
 
 
@@ -47,74 +141,6 @@ instance Show Subtree where
 -- advances path to the subtree by one node
 advancePath :: Subtree -> Subtree
 advancePath subtree = subtree { path = (tail . path) subtree }
-
-
-
--- allows precise control over crossover
-data CrossoverHook a = CrossoverHook { crossoverHook         :: a -> SyntaxTree -> SyntaxTree -> (a, SyntaxTree)
-                                       
-                                     }
-
-hasHook :: EvolverState a b c -> String -> Bool
-hasHook state name = name `member` (crossoverHooks state)
-
-callCrossoverHook :: EvolverState a b c -> String -> SyntaxTree -> SyntaxTree -> (EvolverState a b c, SyntaxTree)
-callCrossoverHook startState hookName tree1 tree2 = (startState, offspring)
-    where
-      (hook, hookState) = (crossoverHooks startState) ! hookName
-      (newHookState, offspring) = (crossoverHook hook) hookState tree1 tree2
-
-      newState = startState
-                 {
-                   crossoverHooks = insert hookName (hook, newHookState) (crossoverHooks startState)
-                 }
-
-
-data EvolverState a b c = EvolverState { choices             :: [Int]
-                                       , probabilities       :: [Double]
-                                       , grammar             :: [Expansion]
-                                       , maxTreeDepth        :: Int
-                                       , mutationProbability :: Double
-                                       , evaluator           :: Evaluator a
-                                       , populationSize      :: Int
-                                       , merger              :: GenerationMerger
-                                       , stopCondition       :: StopCondition
-                                       , generationNumber    :: Int
-                                       , userState           :: a
-                                       , userGenerators      :: [(String, UserGenerator b, b)]
-                                       , crossoverHooks      :: Map String (CrossoverHook c, c)
-                                     }
-
-instance Show (EvolverState a b c) where
-    show state = "EvolverState"
-
-
-
--- transforms an evolver state into a generator state
-mkGeneratorState :: EvolverState a b c -> GeneratorState b
-mkGeneratorState evoState = startState (grammar evoState) (choices evoState) (maxTreeDepth evoState) (userGenerators evoState)
-
-
--- merges an evolver state with a generator state
-mergeStates :: EvolverState a b c -> GeneratorState b -> EvolverState a b c
-mergeStates evoState genState = evoState { choices = stateChoices genState }
-
-
--- advances all lists of random numbers by 1 element
-advance :: EvolverState a b c -> EvolverState a b c
-advance state = state { choices = (tail . choices) state, probabilities = (tail . probabilities) state }
-               
-
--- increments population number
-incGenerationNumber :: EvolverState a b c -> EvolverState a b c
-incGenerationNumber state = state { generationNumber = (generationNumber state) + 1  }
-
-
--- Expands the given term N times, generating N syntax trees
-generatePopulation :: EvolverState a b c -> Term -> Possibly (Population, EvolverState a b c)
-generatePopulation state startTerm = do
-  (trees, finalGeneratorState) <- expandFreeTerms (mkGeneratorState state) $ replicate (populationSize state) startTerm
-  return (trees, mergeStates state finalGeneratorState)
 
 
 -- Gets all subtrees of the given syntax tree, without leaves. The first element is guaranteed to be the root
@@ -174,56 +200,62 @@ safeNull xs ys
     | null xs   = ys
     | otherwise = xs
 
+
+mergeHistories :: [Double] -> [Double] -> [Double]
+mergeHistories [] y = y
+mergeHistories x [] = x
+mergeHistories (x:xs) (y:ys) = (x + y)/2:mergeHistories xs ys
+
 -- performs a genetic crossover of 2 syntax trees. The returned tree is the first tree
 -- with a random subtree replaced by a compatible one from the second tree
-crossover :: EvolverState a b c -> SyntaxTree -> SyntaxTree -> (SyntaxTree, EvolverState a b c)
-crossover state tree1 tree2 = let sub_tree1 = choose (choices state)           eligibles
-                                  hookName = crossoverHookName $ branchTerm $ subtree sub_tree1
-                                  sub_tree2 = choose (choices (advance state)) compatibles
-                                  requiredType = ((branchType . subtree) sub_tree1)
-                                  compatibles = safeNull (compatibleSubtrees requiredType (subtrees tree2))
-                                                         (compatibleSubtrees requiredType (subtrees tree1))
-                                  eligibles = filter (not . locked . branchTerm . subtree) (subtrees tree1) 
-                              in
-                                if null hookName
-                                then
-                                    ( replace tree1 sub_tree1 (subtree sub_tree2)
-                                    , advance $ advance state
-                                    )
-                                else if hasHook state hookName
-                                     then
-                                         let (finalState, offspring) = callCrossoverHook nextState hookName
-                                                                       (subtree sub_tree1) (subtree sub_tree2)
-                                             nextState = advance $ advance state
-                                             in
-                                               ( replace tree1 sub_tree1 offspring
-                                               , finalState
-                                               )
-                                else
-                                    error $ "Crossover hook not available: " ++ hookName
+crossover :: EvaluatedSyntaxTree -> EvaluatedSyntaxTree -> EvolverState a b c EvaluatedSyntaxTree
+crossover tree1 tree2 = do let eligibles = filter (not . locked . branchTerm . subtree) (subtrees $ tree tree1)
+                           sub_tree1 <- randElt eligibles
+                                        
+                           let hookName = crossoverHookName $ branchTerm $ subtree sub_tree1
+                               requiredType = ((branchType . subtree) sub_tree1)
+                               compatibles = safeNull (compatibleSubtrees requiredType (subtrees $ tree tree2))
+                                                      (compatibleSubtrees requiredType (subtrees $ tree tree1))
+
+                           sub_tree2 <- randElt compatibles
+                           state <- get
+
+                           if null hookName
+                               then
+                                   return EvaluatedSyntaxTree {
+                                                tree = replace (tree tree1) sub_tree1 (subtree sub_tree2)
+                                              , fitness = -1
+                                              , fitnessHistory = mergeHistories (fitnessHistory tree1) (fitnessHistory tree2)
+                                              }
+                               else if hasHook state hookName
+                                    then
+                                        do offspring <- callCrossoverHook hookName (subtree sub_tree1) (subtree sub_tree2)
+                                           return EvaluatedSyntaxTree {
+                                                        tree = replace (tree tree1) sub_tree1 offspring
+                                                      , fitness = -1
+                                                      , fitnessHistory = mergeHistories (fitnessHistory tree1) (fitnessHistory tree2)
+                                                      }
+                                    else
+                                        error $ "Crossover hook not available: " ++ hookName
     
 
 -- mutates a random subtree with the probability given in the evolver state
-mutate :: EvolverState a b c -> SyntaxTree -> (SyntaxTree, EvolverState a b c)
-mutate state tree
-       -- no mutation
-       | (head . probabilities) state > (mutationProbability state) = (tree, state)
-       -- mutate if a branch
-       | otherwise = case subtree toMutate of
-                       Leaf _                    -> (tree, state) 
-                       Branch term reqdType _    ->
-                           case expand genState term { termRequiredType = reqdType } of
-                                                     Error msg -> trace ("Could not mutate: " ++ msg)
-                                                                  (tree, state)
-                                                     Good (newTree, nextGenState) ->
-                                                         ( replace tree toMutate newTree
-                                                         , mergeStates state nextGenState)
-       where
-         toMutate = if head (probabilities state) > 0.5 then (subtrees tree) !! 0 else choose (choices state) (subtrees tree)
-         genState = mkGeneratorState $ (advance . advance) state
-
-
-
+mutate :: EvaluatedSyntaxTree -> EvolverState a b c EvaluatedSyntaxTree
+mutate atree = do pr <- randDouble
+                  state <- get
+                  if pr > mutationProbability state
+                     then
+                         return atree
+                     else
+                         do toMutate <- randElt $ subtrees (tree atree)
+                            genState <- mkGeneratorState
+                            case subtree toMutate of
+                              Leaf _ -> return atree
+                              Branch term reqdType _ ->
+                                  case expand genState term { termRequiredType = reqdType } of
+                                    Error msg                 -> return $ trace ("Could not mutate: " ++ msg) atree
+                                    Good (genTree, genState') -> do mergeStates genState'
+                                                                    return atree { tree = replace (tree atree) toMutate genTree }
 
 {-
   FITNESS EVALUATION
@@ -232,11 +264,12 @@ mutate state tree
 -- Evaluates a SyntaxTree and returns a fitness value. Since SyntaxTrees are programs,
 -- evaluation can have arbitrary side effects and is therefore wrapped in the IO monad
 newtype Evaluator a = Evaluator {
-         runEval :: a -> SyntaxTree -> IO (a, Double)
+         runEval :: a -> EvaluatedSyntaxTree -> IO (a, Double)
       }
 
 
 data EvaluatedSyntaxTree = EvaluatedSyntaxTree { fitness :: Double
+                                               , fitnessHistory :: [Double] -- head -> tail: most recent -> least recent
                                                , tree    :: SyntaxTree
                                                } deriving (Show)
 
@@ -248,24 +281,25 @@ instance Ord EvaluatedSyntaxTree where
 
 
 -- Evaluates fitness of a single tree
-evalTree :: EvolverState a b c -> SyntaxTree -> IO (EvolverState a b c, EvaluatedSyntaxTree)
-evalTree state tree = do (ustate, fitnessVal) <- ((runEval . evaluator) state) (userState state) tree
-                         return (state {userState = ustate}
-                                , EvaluatedSyntaxTree { fitness = fitnessVal
-                                                      , tree    = tree
-                                                      }
-                                )
+evalTree :: EvaluatedSyntaxTree -> Evolver a b c -> IO (EvaluatedSyntaxTree, Evolver a b c)
+evalTree atree state = do (ustate, fitnessVal) <- ((runEval . evaluator) state) (userState state) atree
+                          return (atree { fitness = fitnessVal
+                                        , fitnessHistory = fitnessVal : fitnessHistory atree
+                                        }
+                                 , state { userState = ustate }
+                                 )
+
 
 
 -- Evaluates fitness of a population
-evaluate :: EvolverState a b c -> Population -> IO (EvolverState a b c, [EvaluatedSyntaxTree])
-evaluate state [] = return (state, [])
-evaluate state (p:ps) = do (nextState, evaluated) <- evalTree state p
-                           (finalState, rest) <- evaluate nextState ps
-                           return (finalState, evaluated : rest)
+evaluate :: [EvaluatedSyntaxTree] -> Evolver a b c -> IO ([EvaluatedSyntaxTree], Evolver a b c)
+evaluate [] s = return ([], s)
+evaluate (p:ps) s = do (ep, s')   <- evalTree p  s
+                       (eps, s'') <- evaluate ps s'
+                       return (ep:eps, s'')
 
 
--- Normalizes fitness values of evaluated syntax trees so that all of them add up to 1
+-- Normalizes fitness values of evaluated syntax trees so that they add up to 1
 normalizeFitnesses :: [EvaluatedSyntaxTree] -> [EvaluatedSyntaxTree]
 normalizeFitnesses xs = if totalFitness == 0
                         then map (\x -> x { fitness = 0 }) xs
@@ -276,16 +310,15 @@ normalizeFitnesses xs = if totalFitness == 0
 
 -- Normalizes fitness values of evaluated syntax trees and picks an element t from them
 -- with probability (fitness t). All fitnesses have to be normalized.
-pickForReproduction :: EvolverState a b c -> [EvaluatedSyntaxTree] -> SyntaxTree
-pickForReproduction state trees = let rand = (head . probabilities) state
-                                  in
-                                    (head . fst) (foldr picker ([], rand) trees)
-                                          where
-                                            picker t x@(picked, r)
-                                                   | null picked = if fitness t <= r
-                                                                   then ([tree t], r)
-                                                                   else ([], r - fitness t)
-                                                   | otherwise   = x
+pickForReproduction :: [EvaluatedSyntaxTree] -> EvolverState a b c SyntaxTree
+pickForReproduction trees = do pr <- randDouble
+                               return $ (head . fst) (foldr picker ([], pr) trees)
+                               where
+                                 picker t x@(picked, r)
+                                     | null picked = if fitness t <= r
+                                                     then ([tree t], r)
+                                                     else ([], r - fitness t)
+                                     | otherwise   = x
 
 
 
@@ -311,120 +344,70 @@ type EvolutionReporter a = Int -> a -> [EvaluatedSyntaxTree] -> IO (a)
 
 
 -- Evolves a new syntax tree from a population
-evolveTree :: EvolverState a b c -> [EvaluatedSyntaxTree] -> (SyntaxTree, EvolverState a b c)
-evolveTree initState trees = let parent1                        = choose (choices initState) trees
-                                 parent2                        = choose ((choices . advance) initState) trees
-                                 nextState                      = (advance . advance) initState
-                                 (offspring, nextState')        = crossover nextState (tree parent1) (tree parent2)
-                                 (mutatedOffspring, finalState) = mutate nextState' offspring                               
-                             in
-                               (mutatedOffspring, finalState)
+evolveTree :: [EvaluatedSyntaxTree] -> EvolverState a b c EvaluatedSyntaxTree
+evolveTree trees = do parent1          <- randElt trees
+                      parent2          <- randElt trees
+                      offspring        <- crossover parent1 parent2
+                      mutatedOffspring <- mutate offspring                               
+                      return mutatedOffspring
 
 
 -- evolves a population of syntax trees
-evolvePopulation :: EvolverState a b c -> Int -> [EvaluatedSyntaxTree] -> ([SyntaxTree], EvolverState a b c)
-evolvePopulation initState member population
-    | null population = ([], initState)
-    | member == 0     = ([], initState)
-    | otherwise       = let (evolvedTree,       nextState)  = evolveTree initState population
-                            (otherEvolvedTrees, finalState) = evolvePopulation nextState (member - 1) population
-                        in
-                          ( evolvedTree : otherEvolvedTrees
-                          , finalState
-                          )
+evolvePopulation :: Int -> [EvaluatedSyntaxTree] -> EvolverState a b c [EvaluatedSyntaxTree]
+evolvePopulation member population
+    | null population = return []
+    | member == 0     = return []
+    | otherwise       = do evolvedTree <- evolveTree population
+                           otherEvolvedTrees <- evolvePopulation (member - 1) population
+                           return $ evolvedTree : otherEvolvedTrees
+
        
 -- merges an old generation with the new one. Can be used to preserve best members from the old
 -- generation etc
 type GenerationMerger = [EvaluatedSyntaxTree] -> [EvaluatedSyntaxTree] -> [EvaluatedSyntaxTree]
 
--- Evolves a population for a number of epochs
-evolve :: EvolverState a b c -> Int -> EvolutionReporter a -> [EvaluatedSyntaxTree]
-       -> IO (  (EvolverState a b c, [EvaluatedSyntaxTree])  )
+
+-- Evolves a population for a number of epochs.
+-- Note: we want this to live inside the IO monad, so we can't use State monad's conveniences
+-- (or maybe we can but my haskell vodoo isn't strong enough)
+evolve :: Evolver a b c -> Int -> EvolutionReporter a -> [EvaluatedSyntaxTree]
+       -> IO (  (Evolver a b c, [EvaluatedSyntaxTree])  )
 evolve initState epochs reporter population
     | epochs == 0    = return (initState, population)
-    | (stopCondition initState) population = do finalUserState <- reporter (generationNumber initState) (userState initState) population
+    | (stopCondition initState) population = do finalUserState <- reporter (generationNumber initState)
+                                                                  (userState initState)
+                                                                  population
                                                 return (initState { userState = finalUserState }, population)
-    | otherwise      = do let normalized                  = normalizeFitnesses population
-                              (evolvedPopulation, state') = evolvePopulation initState (populationSize initState) normalized
-                          (state'', reevaluatedOldPopulation) <- evaluate state' $ map tree population
-                          (finalState, evaluatedEvolvedPopulation) <- evaluate state'' evolvedPopulation
-                          finalUserState <- reporter (generationNumber finalState) (userState finalState) population
-                          
-                          evolve (incGenerationNumber finalState { userState = finalUserState })
-                                 (epochs - 1) reporter
-                                 ((merger finalState) reevaluatedOldPopulation evaluatedEvolvedPopulation)
+                                                       
+    | otherwise      = do let (evolvedPopulation, evoState) = runState evolveHelper initState
+                          (reevaluatedOldPopulation, evoState') <- evaluate population evoState
+                          (evaluatedEvolvedPopulation, evoState'') <- evaluate evolvedPopulation evoState'
+                          newUserState <- reporter (generationNumber evoState'') (userState evoState'') population
+                          let finalGenState = execState incGenerationNumber evoState'' { userState = newUserState }
+                          evolve finalGenState (epochs - 1) reporter
+                                 ((merger finalGenState) reevaluatedOldPopulation evaluatedEvolvedPopulation)
+    where
+      test = []
+      evolveHelper :: EvolverState a b c [EvaluatedSyntaxTree]
+      evolveHelper = do let normalized = normalizeFitnesses population
+                        state <- get
+                        evolvedPopulation <- evolvePopulation (populationSize state) normalized
+                        return evolvedPopulation
+                            
 
 
 -- generates a new population and evolves it for a number of epochs
-startEvolving :: EvolverState a b c -> Term -> Int -> EvolutionReporter a -> IO ([EvaluatedSyntaxTree])
-startEvolving initState startTerm epochs reporter = do (nextState2, evaluated) <- evaluate nextState initialPopulation
-                                                       (_, finalPopulation) <- evolve nextState2 epochs reporter evaluated
+startEvolving :: Evolver a b c -> Term -> Int -> EvolutionReporter a -> IO ([EvaluatedSyntaxTree])
+startEvolving initState startTerm epochs reporter = do (evaluated, nextState2) <- evaluate initialEvaluatedPopulation nextState
+                                                       newUserState <- reporter (generationNumber nextState2)
+                                                                       (userState nextState2)
+                                                                       $ trace "Calling reporter... " evaluated
+                                                       (_, finalPopulation) <- evolve nextState2 { userState = newUserState, generationNumber = 1 + generationNumber nextState2 } epochs reporter evaluated
                                                        return finalPopulation
                                                     where
                                                       (initialPopulation, nextState) =
-                                                          case generatePopulation initState startTerm of
-                                                              Error msg ->
+                                                          case runState (generatePopulation startTerm) initState of
+                                                              (Error msg, _) ->
                                                                   error $ "Could not generate initial population: " ++ msg
-                                                              Good x    -> x
-
-
-{-
-  DEBUG DEFINITIONS
--}
-
-defaultReporter :: EvolutionReporter Bool
-defaultReporter generation state trees = do putStrLn $ show generation ++ ": Evolving..."
-                                            return False
-
-expansions = parseGrammar $ unlines ["<Num> <BinOp> <Num> :: Num"
-                                    , "+ :: BinOp"
-                                    , "- :: BinOp"
-                                    , "* :: BinOp"
-                                    , "/ :: BinOp"
-                                    , "<Func> <Num> :: Num"
-                                    , "sin :: Func"
-                                    , "cos :: Func"
-                                    , "tan :: Func"
-                                    , "1 :: Num"
-                                    , "2 :: Num"
-                                    , "3 :: Num"]
-
-
-
-evoState = EvolverState { choices             = randoms (mkStdGen 42)             :: [Int]
-                        , probabilities       = randomRs (0.0, 1.0) (mkStdGen 43) :: [Double]
-                        , grammar             = possibly id (\_ -> []) expansions
-                        , maxTreeDepth        = 100
-                        , mutationProbability = 0.1
-                        , evaluator           = Evaluator { runEval = (\s _ -> return (s, 1))
-                                                          }
-                        , populationSize      = 100
-                        , merger              = (\old new -> new)
-                        , stopCondition       = (\_ -> False)
-                        , generationNumber    = 1
-                        , userState           = False
-                        , userGenerators      = []
-                        , crossoverHooks      = fromList []
-                        }
-
-
-startTerm = (NonterminalTerm (PrimitiveType "Num") False "")
-
-
-population = let p = generatePopulation evoState startTerm
-             in
-               case p of
-                 Error msg       -> error msg
-                 Good (trees, _) -> trees
-
-
-tree1 = population !! 0
-tree2 = population !! 1
-tree3 = population !! 2
-
-applyN :: (a -> a) -> Int -> a -> a
-applyN f c arg
-           | c <= 1   = f arg
-           | otherwise = f $ applyN f (c - 1) arg
-
-
+                                                              (Good x, s)    -> (x, s)
+                                                      initialEvaluatedPopulation = map (\t -> EvaluatedSyntaxTree {  fitness = -1, fitnessHistory = [], tree = t }) initialPopulation
