@@ -89,7 +89,7 @@ data Evolver a b c = Evolver { choices             :: [Int]
                              , mutationProbability :: Double
                              , evaluator           :: Evaluator a
                              , populationSize      :: Int
-                             , merger              :: GenerationMerger
+                             , merger              :: GenerationMerger a
                              , stopCondition       :: StopCondition
                              , generationNumber    :: Int
                              , userState           :: a
@@ -393,11 +393,19 @@ evolvePopulation member population
 
        
 -- merges an old generation with the new one. Can be used to preserve best members from the old
--- generation etc
-type GenerationMerger = [EvaluatedSyntaxTree] -> [EvaluatedSyntaxTree] -> [EvaluatedSyntaxTree]
+-- generation etc. The type parameter "a" represents user state
+type GenerationMerger a = a -> [EvaluatedSyntaxTree] -> [EvaluatedSyntaxTree] -> ([EvaluatedSyntaxTree], a)
+
+callGenerationMerger :: [EvaluatedSyntaxTree] -> [EvaluatedSyntaxTree] -> EvolverState a b c [EvaluatedSyntaxTree]
+callGenerationMerger old new = do s <- get
+                                  let ustate = userState s
+                                      m = merger s
+                                      (merged, ustate') = m ustate old new
+                                  put s { userState = ustate' }
+                                  return merged
 
 
--- Evolves a population for a number of epochs.
+-- evolves a population for a number of epochs.
 -- Note: we want this to live inside the IO monad, so we can't use State monad's conveniences
 -- (or maybe we can but my haskell vodoo isn't strong enough)
 evolve :: Evolver a b c -> Int -> EvolutionReporter a -> [EvaluatedSyntaxTree]
@@ -413,9 +421,10 @@ evolve initState epochs reporter population
                           (reevaluatedOldPopulation, evoState') <- evaluate population evoState
                           (evaluatedEvolvedPopulation, evoState'') <- evaluate evolvedPopulation evoState'
                           newUserState <- reporter (generationNumber evoState'') (userState evoState'') population
-                          let finalGenState = execState incGenerationNumber evoState'' { userState = newUserState }
-                          evolve finalGenState (epochs - 1) reporter
-                                 ((merger finalGenState) reevaluatedOldPopulation evaluatedEvolvedPopulation)
+                          let evoState''' = execState incGenerationNumber evoState'' { userState = newUserState }
+                              genMerger = callGenerationMerger reevaluatedOldPopulation evaluatedEvolvedPopulation
+                              (nextPopulation, finalEvoState)  = runState genMerger evoState'''
+                          evolve finalEvoState (epochs - 1) reporter nextPopulation
     where
       test = []
       evolveHelper :: EvolverState a b c [EvaluatedSyntaxTree]
