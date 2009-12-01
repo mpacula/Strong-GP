@@ -348,7 +348,12 @@ pickForReproduction :: [EvaluatedSyntaxTree] -> EvolverState a b c EvaluatedSynt
 pickForReproduction trees = do pr <- randDouble
                                let result = fst $ foldr picker ([], pr) trees
                                if null result
-                                  then error "No candidate for reproduction was picked. This is a bug."
+                                  -- due to rounding errors, fitnesses might not add up to exactly 1
+                                  -- In such cases, if pr is close to 1, no tree will be picked by the foldr
+                                  -- so just assume the first one should have been picked (remember foldr
+                                  -- goes right -> left).
+                                  -- This happens *very* rarely, so this fix does no harm.
+                                  then return $ head trees
                                   else return $ head result
                                where
                                  picker t x@(picked, r)
