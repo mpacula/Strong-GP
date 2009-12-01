@@ -82,19 +82,21 @@ callCrossoverHook hookName tree1 tree2 = do state <- get
 
 
 
-data Evolver a b c = Evolver { choices             :: [Int]
-                             , probabilities       :: [Double]
-                             , grammar             :: [Expansion]
-                             , maxTreeDepth        :: Int
-                             , mutationProbability :: Double
-                             , evaluator           :: Evaluator a
-                             , populationSize      :: Int
-                             , merger              :: GenerationMerger a
-                             , stopCondition       :: StopCondition
-                             , generationNumber    :: Int
-                             , userState           :: a
-                             , userGenerators      :: [(String, UserGenerator b, b)]
-                             , crossoverHooks      :: Map String (CrossoverHook c, c)
+data Evolver a b c = Evolver { choices                       :: [Int]
+                             , probabilities                 :: [Double]
+                             , grammar                       :: [Expansion]
+                             , maxTreeDepth                  :: Int
+                             , mutationProbability           :: Double
+                             , completeMutationProbability   :: Double
+                             , randomSelectionProbability    :: Double
+                             , evaluator                     :: Evaluator a
+                             , populationSize                :: Int
+                             , merger                        :: GenerationMerger a
+                             , stopCondition                 :: StopCondition
+                             , generationNumber              :: Int
+                             , userState                     :: a
+                             , userGenerators                :: [(String, UserGenerator b, b)]
+                             , crossoverHooks                :: Map String (CrossoverHook c, c)
                              }
 
 
@@ -274,7 +276,12 @@ mutate atree = do pr <- randDouble
                      then
                          return atree
                      else
-                         do toMutate <- randElt $ subtrees (tree atree)
+                         do r1 <- randDouble
+                            
+                            toMutate <- if r1 < completeMutationProbability state
+                                        then return $ (subtrees (tree atree)) !! 0
+                                        else randElt $ subtrees (tree atree)
+
                             genState <- mkGeneratorState
                             case subtree toMutate of
                               Leaf _ -> return atree
@@ -375,8 +382,15 @@ type EvolutionReporter a = Int -> a -> [EvaluatedSyntaxTree] -> IO (a)
 
 -- Evolves a new syntax tree from a population
 evolveTree :: [EvaluatedSyntaxTree] -> EvolverState a b c EvaluatedSyntaxTree
-evolveTree trees = do parent1          <- pickForReproduction trees
-                      parent2          <- pickForReproduction trees
+evolveTree trees = do state <- get
+                      r1 <- randDouble
+                      r2 <- randDouble
+                      parent1          <- if r1 >= (randomSelectionProbability state)
+                                          then pickForReproduction trees
+                                          else randElt trees
+                      parent2          <- if r2 >= (randomSelectionProbability state)
+                                          then pickForReproduction trees
+                                          else randElt trees
                       offspring        <- crossover parent1 parent2
                       mutatedOffspring <- mutate offspring                               
                       return mutatedOffspring
