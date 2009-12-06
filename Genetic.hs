@@ -282,6 +282,8 @@ mutate atree = do pr <- randDouble
                                         then return $ (subtrees (tree atree)) !! 0
                                         else randElt $ subtrees (tree atree)
 
+                            let regenerated = (subtree toMutate) == (tree atree)
+
                             genState <- mkGeneratorState
                             case subtree toMutate of
                               Leaf _ -> return atree
@@ -289,7 +291,11 @@ mutate atree = do pr <- randDouble
                                   case expand genState term { termRequiredType = reqdType } of
                                     Error msg                 -> return $ trace ("Could not mutate: " ++ msg) atree
                                     Good (genTree, genState') -> do mergeStates genState'
-                                                                    return atree { tree = replace (tree atree) toMutate genTree }
+                                                                    return atree { tree = replace (tree atree) toMutate genTree
+                                                                                 , fitnessHistory = if regenerated
+                                                                                                    then fitnessHistory atree
+                                                                                                    else []
+                                                                                 }
 
 {-
   FITNESS EVALUATION
