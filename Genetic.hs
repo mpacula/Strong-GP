@@ -293,8 +293,8 @@ mutate atree = do pr <- randDouble
                                     Good (genTree, genState') -> do mergeStates genState'
                                                                     return atree { tree = replace (tree atree) toMutate genTree
                                                                                  , fitnessHistory = if regenerated
-                                                                                                    then fitnessHistory atree
-                                                                                                    else []
+                                                                                                    then []
+                                                                                                    else fitnessHistory atree
                                                                                  }
 
 {-
