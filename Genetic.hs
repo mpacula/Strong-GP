@@ -350,23 +350,24 @@ normalizeFitnesses xs = if totalFitness == 0
 
 -- Normalizes fitness values of evaluated syntax trees and picks an element t from them
 -- with probability (fitness t). All fitnesses have to be normalized.
-pickForReproduction :: [EvaluatedSyntaxTree] -> EvolverState a b c EvaluatedSyntaxTree
-pickForReproduction trees = do pr <- randDouble
-                               let result = fst $ foldr picker ([], pr) trees
-                               if null result
-                                  -- due to rounding errors, fitnesses might not add up to exactly 1
-                                  -- In such cases, if pr is close to 1, no tree will be picked by the foldr
-                                  -- so just assume the first one should have been picked (remember foldr
-                                  -- goes right -> left).
-                                  -- This happens *very* rarely, so this fix does no harm.
-                                  then return $ head trees
-                                  else return $ head result
-                               where
-                                 picker t x@(picked, r)
-                                     | null picked = if fitness t >= r
-                                                     then ([t], r)
-                                                     else ([], r - fitness t)
-                                     | otherwise   = x
+pickForReproduction :: (d -> Double) -> [d] -> EvolverState a b c d
+pickForReproduction func trees
+    = do pr <- randDouble
+         let result = fst $ foldr picker ([], pr) trees
+         if null result
+         -- due to rounding errors, fitnesses might not add up to exactly 1
+         -- In such cases, if pr is close to 1, no tree will be picked by the foldr
+         -- so just assume the first one should have been picked (remember foldr
+         -- goes right -> left).
+         -- This happens *very* rarely, so this fix does no harm.
+            then return $ head trees
+            else return $ head result
+    where
+      picker t x@(picked, r)
+          | null picked = if func t >= r
+                          then ([t], r)
+                          else ([], r - func t)
+          | otherwise   = x
 
 
 
@@ -397,10 +398,10 @@ evolveTree trees = do state <- get
                       r1 <- randDouble
                       r2 <- randDouble
                       parent1          <- if r1 >= (randomSelectionProbability state)
-                                          then pickForReproduction trees
+                                          then pickForReproduction fitness trees
                                           else randElt trees
                       parent2          <- if r2 >= (randomSelectionProbability state)
-                                          then pickForReproduction trees
+                                          then pickForReproduction fitness trees
                                           else randElt trees
                       offspring        <- crossover parent1 parent2
                       mutatedOffspring <- mutate offspring                               
