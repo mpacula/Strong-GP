@@ -446,7 +446,7 @@ evolve initState epochs reporter population
     | otherwise      = do let (evolvedPopulation, evoState) = runState evolveHelper initState
                           (reevaluatedOldPopulation, evoState') <- evaluate population evoState
                           (evaluatedEvolvedPopulation, evoState'') <- evaluate evolvedPopulation evoState'
-                          newUserState <- reporter (generationNumber evoState'') (userState evoState'') population
+                          newUserState <- reporter (generationNumber evoState'') (userState evoState'') evaluatedEvolvedPopulation
                           let evoState''' = execState incGenerationNumber evoState'' { userState = newUserState }
                               genMerger = callGenerationMerger reevaluatedOldPopulation evaluatedEvolvedPopulation
                               (nextPopulation, finalEvoState)  = runState genMerger evoState'''
