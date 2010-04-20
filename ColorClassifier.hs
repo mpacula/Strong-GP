@@ -34,9 +34,9 @@ getGrammar = parseGrammar $ unlines [
              , "r :: Var"
              , "g :: Var"
              , "b :: Var"
---             , "h :: Var"
---             , "s :: Var"
---             , "v :: Var"
+             , "h :: Var"
+             , "s :: Var"
+             , "v :: Var"
              , "<Var> :: NumExpr"
              , "<Number, ch=crossover> :: NumExpr"
              , "<Fraction, ch=crossover> :: NumExpr"
@@ -80,6 +80,7 @@ getGrammar = parseGrammar $ unlines [
              , "<NumExpr> <EqOp> <NumExpr> :: EqExpr"
              , "<Ratio> <EqOp> <Fraction> :: EqExpr"
              , "<Ratio> <EqOp> <Ratio> :: EqExpr"
+             , "<Var> <EqOp> <Number> :: EqExpr"
              , "<EqExpr> :: BoolExpr"
              ]
 

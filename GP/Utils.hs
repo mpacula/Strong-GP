@@ -33,6 +33,7 @@
 module GP.Utils
     (
      choose
+    , chooseArray
     , xor
     , partitionEithers
     , indexFoldr
@@ -42,6 +43,7 @@ module GP.Utils
 
 
 import Data.List (partition)
+import Data.Array
 
 -- given a list of indices, takes the first one and returns an element of a list at that
 -- index. The index is wrapped around to make sure it doesn't go out of bounds.
@@ -53,6 +55,16 @@ choose choices xs
     | otherwise        = xs !! ((`mod` size) . head) choices
     where
       size = length xs
+
+
+chooseArray :: [Int] -> Array Int e -> e
+chooseArray choices xs
+    | size == 0        = error "No items to choose from (list is empty)"
+    | otherwise        = xs ! ((`mod` size) . head) choices
+    where
+      (min, max) = bounds xs
+      size = max - min
+
 
 
 -- binary exclusive or

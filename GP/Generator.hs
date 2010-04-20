@@ -49,7 +49,7 @@ module GP.Generator
 
 
 import Debug.Trace (trace)
-import System.Random (mkStdGen, randoms, getStdGen)
+import System.Random (mkStdGen, randoms, getStdGen, randomRs)
 import Data.List (intersperse, find, sortBy)
 import Data.Map (Map, fromList, (!), member, insert)
 import GP.Generator.Types (Type (..), isPrimitive, isPolymorphic, isTypeVariable, isTypeCompatible)
@@ -384,7 +384,7 @@ expand initState term@(NonterminalTerm requiredType locked _)
 -- performs a best-first expansion of an expression to terminate all nonterminals.
 -- The heuristic is inversely proportional to the number of nonterminals
 terminateTerm :: GeneratorState a -> Term -> Possibly (SyntaxTree, GeneratorState a)
-terminateTerm initState term = bestFirst initState [([term], buildTree)]
+terminateTerm initState term = bestFirst initState [(1, [term], buildTree)]
     where
       buildTree :: GeneratorState a -> [SyntaxTree] -> Possibly (SyntaxTree, GeneratorState a)
       buildTree state [tree] = Good (tree, state)
@@ -393,9 +393,9 @@ terminateTerm initState term = bestFirst initState [([term], buildTree)]
 
 
 -- TODO: this is a first working attempt at doing this and needs cleanup
-bestFirst :: GeneratorState a -> [([Term], GeneratorState a -> [SyntaxTree] -> Possibly (SyntaxTree, GeneratorState a))] -> Possibly (SyntaxTree, GeneratorState a)
+bestFirst :: GeneratorState a -> [(Double, [Term], GeneratorState a -> [SyntaxTree] -> Possibly (SyntaxTree, GeneratorState a))] -> Possibly (SyntaxTree, GeneratorState a)
 bestFirst initState [] = Error "Unable to terminate term: exhausted all posibilities"
-bestFirst initState ((nts, buildTree):xs) =
+bestFirst initState ((val, nts, buildTree):xs) =
     if null nts
     then
         -- we're done: the best expansion in the open list has no nonterminals
@@ -404,7 +404,11 @@ bestFirst initState ((nts, buildTree):xs) =
     else
         -- TODO: the way state is passed here (no instantiation) breaks polymorphic types
         let 
-            newTrees = map (\p -> (newNonterminals p, newBuildTree p)) productions
+            newTrees = map (\(p, noise) -> (noise + fromIntegral (length (newNonterminals p)),
+                                               newNonterminals p, newBuildTree p))
+                       (zip productions (take (length productions) noise))
+
+            noise = randomRs (0.0, 0.5) (mkStdGen $ (stateChoices initState) !! 0) :: [Double]
             
             termToExpand = head nts
             productions = compatibleProductions (termRequiredType termToExpand) (stateProductions initState)
@@ -439,7 +443,7 @@ bestFirst initState ((nts, buildTree):xs) =
                   (restTrees, branch, endState)
                                                       
                                                                              
-        in
-          bestFirst initState $ sortBy (\(terms1, _) (terms2, _) ->
-                                            compare (length terms1) (length terms2))
+        in          
+          bestFirst initState $ sortBy (\(val1, _, _) (val2 , _, _) ->
+                                            compare val1 val2)
                         (xs ++ newTrees)
