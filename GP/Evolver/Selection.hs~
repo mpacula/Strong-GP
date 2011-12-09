@@ -1,7 +1,0 @@
-module GP.Evolver.Selection
-    (
-      roulette
-    , tournament
-    )
-
-
